@@ -1,0 +1,1960 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ISpooferMotion — Animation Spoofing & Asset Replacement Utility untuk Roblox</title>
+<meta name="description" content="ISpooferMotion (ISM) — utility open source untuk scan, fetch, dan re-upload asset Roblox (animasi, sound, decal, mesh, video) langsung ke Roblox Studio. V2 berbasis Tauri 2 + Rust + Luau. GPL-3.0.">
+<meta name="theme-color" content="#05070d">
+<meta property="og:title" content="ISpooferMotion — Animation Spoofing Utility untuk Roblox">
+<meta property="og:description" content="Scan seluruh place, preview R6/R15, replace asset tanpa edit instance manual. Open source, GPL-3.0.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2305070d'/%3E%3Cpath d='M7 22c5-12 13-14 18-14' stroke='%2322d3ee' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='7' cy='22' r='3.2' fill='%23a855f7'/%3E%3Ccircle cx='25' cy='8' r='3.2' fill='%2322d3ee'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#05070d; --bg-2:#080c15; --panel:rgba(255,255,255,.028); --panel-2:rgba(255,255,255,.05);
+    --line:rgba(255,255,255,.085); --line-2:rgba(255,255,255,.16);
+    --txt:#e8eef8; --mut:#8b9ab2; --mut-2:#63718a;
+    --cyan:#22d3ee; --violet:#a855f7; --green:#34d399; --amber:#fbbf24; --pink:#f472b6;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --r:16px; --r-sm:10px; --max:1180px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth;scroll-padding-top:80px}
+  body{
+    margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);
+    font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;overflow-x:hidden;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      radial-gradient(900px 520px at 12% -8%,rgba(34,211,238,.13),transparent 62%),
+      radial-gradient(760px 480px at 92% 4%,rgba(168,85,247,.14),transparent 60%),
+      radial-gradient(680px 520px at 50% 108%,rgba(34,211,238,.06),transparent 65%);
+  }
+  body::after{
+    content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.35;
+    background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+    background-size:56px 56px;
+    mask-image:radial-gradient(circle at 50% 30%,#000 0%,transparent 78%);
+    -webkit-mask-image:radial-gradient(circle at 50% 30%,#000 0%,transparent 78%);
+  }
+  .wrap{position:relative;z-index:1;max-width:var(--max);margin:0 auto;padding:0 24px}
+  a{color:var(--cyan);text-decoration:none}
+  a:hover{text-decoration:underline}
+  h1,h2,h3,h4{line-height:1.18;margin:0;letter-spacing:-.02em;font-weight:680}
+  h2{font-size:clamp(26px,3.4vw,40px)}
+  h3{font-size:19px}
+  p{margin:0}
+  code,kbd,pre{font-family:var(--mono)}
+  kbd{
+    background:var(--panel-2);border:1px solid var(--line);border-bottom-color:var(--line-2);
+    border-radius:6px;padding:2px 7px;font-size:12.5px;color:#cfe0f5
+  }
+  ::selection{background:rgba(34,211,238,.3)}
+  .mono{font-family:var(--mono);font-size:12.8px;color:#cff9ff}
+
+  /* ---------- nav ---------- */
+  header.nav{
+    position:sticky;top:0;z-index:50;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+    background:rgba(5,7,13,.72);border-bottom:1px solid var(--line);
+  }
+  .nav-in{display:flex;align-items:center;gap:22px;height:66px}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;letter-spacing:-.02em;color:var(--txt);font-size:16.5px}
+  .brand:hover{text-decoration:none}
+  .brand svg{display:block;flex:none}
+  .brand .tag{
+    font:600 10.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--cyan);
+    border:1px solid rgba(34,211,238,.35);background:rgba(34,211,238,.08);padding:4px 7px;border-radius:5px
+  }
+  nav.links{margin-left:auto;display:flex;gap:26px;font-size:14.5px}
+  nav.links a{color:var(--mut)}
+  nav.links a:hover{color:var(--txt);text-decoration:none}
+  .nav-cta{display:flex;gap:10px;align-items:center}
+
+  /* ---------- buttons ---------- */
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:9px;
+    padding:11px 19px;border-radius:var(--r-sm);font-size:14.5px;font-weight:600;cursor:pointer;
+    border:1px solid var(--line-2);background:var(--panel-2);color:var(--txt);
+    transition:transform .16s ease,box-shadow .2s ease,background .2s ease,border-color .2s ease;
+    text-decoration:none!important;white-space:nowrap
+  }
+  .btn:hover{transform:translateY(-1.5px);background:rgba(255,255,255,.075)}
+  .btn:active{transform:translateY(0)}
+  .btn.primary{
+    background:linear-gradient(135deg,var(--cyan),#3b82f6 48%,var(--violet));
+    border-color:transparent;color:#03121a;font-weight:700;
+    box-shadow:0 10px 30px -12px rgba(34,211,238,.6)
+  }
+  .btn.primary:hover{box-shadow:0 16px 40px -12px rgba(34,211,238,.75)}
+  .btn.ghost{background:transparent}
+  .btn.sm{padding:8px 13px;font-size:13px;border-radius:8px}
+  .btn[disabled]{opacity:.45;cursor:not-allowed;transform:none!important}
+  .btn .ico{width:16px;height:16px;flex:none}
+
+  /* ---------- hero ---------- */
+  .hero{padding:74px 0 42px;display:grid;grid-template-columns:1.02fr .98fr;gap:52px;align-items:center}
+  .pill{
+    display:inline-flex;align-items:center;gap:9px;font-size:12.5px;font-weight:600;
+    border:1px solid rgba(52,211,153,.3);background:rgba(52,211,153,.08);color:#a7f3d0;
+    padding:6px 12px;border-radius:999px;margin-bottom:22px
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(52,211,153,.7);animation:pulse 2.4s infinite}
+  @keyframes pulse{70%{box-shadow:0 0 0 9px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+  h1{font-size:clamp(34px,5.1vw,58px);font-weight:750;letter-spacing:-.035em}
+  .grad{background:linear-gradient(120deg,#67e8f9,var(--cyan) 26%,var(--violet) 78%);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{margin-top:20px;font-size:17.5px;color:#b3c1d6;max-width:56ch}
+  .lede b{color:#e8eef8;font-weight:620}
+  .hero-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:30px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:26px}
+  .chip{
+    font:500 12px/1 var(--mono);color:#a9bad2;border:1px solid var(--line);background:var(--panel);
+    padding:7px 10px;border-radius:7px
+  }
+  .chip.v{border-color:rgba(168,85,247,.32);color:#e9d5ff;background:rgba(168,85,247,.09)}
+  .chip.c{border-color:rgba(34,211,238,.3);color:#cff9ff;background:rgba(34,211,238,.07)}
+
+  .stage{
+    position:relative;border:1px solid var(--line);border-radius:20px;overflow:hidden;
+    background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012));
+    box-shadow:0 40px 90px -50px rgba(34,211,238,.55),inset 0 1px 0 rgba(255,255,255,.06)
+  }
+  .stage-bar{
+    display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line);
+    background:rgba(255,255,255,.028)
+  }
+  .stage-bar i{width:10px;height:10px;border-radius:50%;background:#3b4761;display:block}
+  .stage-bar i:nth-child(1){background:#ff5f57}.stage-bar i:nth-child(2){background:#febc2e}.stage-bar i:nth-child(3){background:#28c840}
+  .stage-bar span{margin-left:8px;font:500 11.5px/1 var(--mono);color:var(--mut-2)}
+  .stage canvas{display:block;width:100%;height:auto;aspect-ratio:1/1;background:transparent}
+  .stage-foot{
+    display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;
+    border-top:1px solid var(--line);font:500 11.5px/1.4 var(--mono);color:var(--mut-2)
+  }
+  .stage-foot .k{color:var(--cyan)}
+
+  /* ---------- stats strip ---------- */
+  .strip{
+    display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);
+    border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin:44px 0 0
+  }
+  .strip div{background:var(--bg-2);padding:20px 22px}
+  .strip .n{font-size:19px;font-weight:700;letter-spacing:-.02em;font-family:var(--mono)}
+  .strip .l{font-size:12.5px;color:var(--mut);margin-top:3px}
+
+  /* ---------- sections ---------- */
+  section{padding:92px 0}
+  .sec-head{max-width:64ch;margin-bottom:44px}
+  .eyebrow{
+    font:600 11.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--cyan);margin-bottom:14px
+  }
+  .sec-head p{margin-top:15px;color:var(--mut);font-size:16.5px}
+  .hr{height:1px;background:linear-gradient(90deg,transparent,var(--line),transparent);border:0;margin:0}
+
+  .grid{display:grid;gap:16px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .card{
+    border:1px solid var(--line);border-radius:var(--r);padding:24px;background:var(--panel);
+    transition:border-color .22s ease,transform .22s ease,background .22s ease;position:relative;overflow:hidden
+  }
+  .card:hover{border-color:var(--line-2);transform:translateY(-2px);background:var(--panel-2)}
+  .card h3{margin-bottom:9px;display:flex;align-items:center;gap:10px}
+  .card p{color:var(--mut);font-size:14.6px}
+  .card .vtag{
+    position:absolute;top:18px;right:18px;font:600 10px/1 var(--mono);letter-spacing:.08em;
+    padding:4px 6px;border-radius:5px;border:1px solid var(--line);color:var(--mut-2);background:rgba(255,255,255,.03)
+  }
+  .card .vtag.v2{color:#e9d5ff;border-color:rgba(168,85,247,.3);background:rgba(168,85,247,.09)}
+  .card .vtag.v1{color:#cff9ff;border-color:rgba(34,211,238,.28);background:rgba(34,211,238,.075)}
+  .ico-box{
+    width:38px;height:38px;border-radius:10px;display:grid;place-items:center;flex:none;
+    border:1px solid var(--line);background:linear-gradient(150deg,rgba(34,211,238,.14),rgba(168,85,247,.14))
+  }
+  .ico-box svg{width:19px;height:19px;stroke:#dff6ff;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+
+  /* ---------- workflow ---------- */
+  .flow{position:relative;display:grid;gap:14px;margin-top:8px}
+  .flow::before{content:"";position:absolute;left:29px;top:18px;bottom:18px;width:1px;background:linear-gradient(180deg,var(--cyan),var(--violet));opacity:.4}
+  .step{display:grid;grid-template-columns:60px 1fr;gap:20px;align-items:start;position:relative}
+  .step .num{
+    width:60px;height:60px;border-radius:16px;display:grid;place-items:center;flex:none;
+    border:1px solid var(--line);background:var(--bg-2);font:700 18px/1 var(--mono);color:var(--cyan);
+    box-shadow:0 10px 30px -18px rgba(34,211,238,.9)
+  }
+  .step .body{border:1px solid var(--line);border-radius:var(--r);padding:22px 24px;background:var(--panel)}
+  .step .body h3{margin-bottom:8px}
+  .step .body p{color:var(--mut);font-size:14.7px}
+  .term{
+    margin-top:16px;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;background:#04060b
+  }
+  .term .t-bar{
+    padding:7px 12px;border-bottom:1px solid var(--line);font:500 11px/1 var(--mono);color:var(--mut-2);
+    background:rgba(255,255,255,.028);display:flex;justify-content:space-between
+  }
+  .term pre{margin:0;padding:13px 14px;font-size:12.4px;line-height:1.8;color:#9fb3cc;overflow-x:auto}
+  .term .ok{color:var(--green)}.term .in{color:var(--cyan)}.term .id{color:var(--amber)}.term .di{color:var(--mut-2)}
+
+  /* ---------- viewer ---------- */
+  .viewer{display:grid;grid-template-columns:1.05fr .95fr;gap:18px;align-items:start}
+  .panel{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:18px}
+  .panel h3{font-size:15px;margin-bottom:14px;color:#cfe0f5}
+  .drop{
+    border:1.5px dashed var(--line-2);border-radius:var(--r);padding:22px;text-align:center;
+    transition:border-color .2s,background .2s;cursor:pointer
+  }
+  .drop:hover,.drop.over{border-color:var(--cyan);background:rgba(34,211,238,.055)}
+  .drop strong{display:block;font-size:14.5px;margin-bottom:5px}
+  .drop span{font-size:12.8px;color:var(--mut)}
+  .seg{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .seg button{
+    flex:1;min-width:88px;padding:9px 12px;border-radius:9px;border:1px solid var(--line);
+    background:var(--panel-2);color:var(--mut);font:600 13px/1 var(--sans);cursor:pointer;transition:.18s
+  }
+  .seg button:hover{color:var(--txt);border-color:var(--line-2)}
+  .seg button[aria-pressed="true"]{color:#03121a;background:linear-gradient(135deg,var(--cyan),#60a5fa);border-color:transparent}
+  .ctl{display:flex;align-items:center;gap:12px;margin-top:14px}
+  .ctl .time{font:600 12.5px/1 var(--mono);color:var(--mut);min-width:96px;text-align:right}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;width:100%;height:5px;border-radius:99px;background:rgba(255,255,255,.12);outline:none;accent-color:var(--cyan)
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:15px;height:15px;border-radius:50%;background:var(--cyan);
+    border:2px solid #04121a;box-shadow:0 0 0 3px rgba(34,211,238,.22);cursor:pointer
+  }
+  input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;background:var(--cyan);border:2px solid #04121a;cursor:pointer}
+  .mini-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;margin-top:16px}
+  .mini-stats div{background:var(--bg-2);padding:11px 13px}
+  .mini-stats .k{font:500 10.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--mut-2)}
+  .mini-stats .v{font:600 14px/1.3 var(--mono);margin-top:5px;word-break:break-all}
+  .joints{max-height:158px;overflow:auto;margin-top:14px;border:1px solid var(--line);border-radius:var(--r-sm);background:#04060b}
+  .joints div{display:flex;justify-content:space-between;gap:10px;padding:7px 11px;font:500 11.7px/1.4 var(--mono);color:#a9bad2;border-bottom:1px solid rgba(255,255,255,.045)}
+  .joints div:last-child{border-bottom:0}
+  .joints span{color:var(--mut-2);font-size:10.6px}
+  .note{font-size:12.5px;color:var(--mut-2);margin-top:12px;line-height:1.6}
+  .notice{margin-top:12px;font-size:13px;border-radius:9px;padding:10px 12px;display:none}
+  .notice.bad{display:block;border:1px solid rgba(248,113,113,.35);background:rgba(248,113,113,.09);color:#fecaca}
+  .notice.good{display:block;border:1px solid rgba(52,211,153,.3);background:rgba(52,211,153,.08);color:#a7f3d0}
+  .stage2{position:relative;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
+  .stage2 canvas{display:block;width:100%;height:auto;aspect-ratio:4/3;cursor:grab}
+  .stage2 canvas:active{cursor:grabbing}
+  .stage2 .badge{position:absolute;top:12px;left:12px;font:600 10.5px/1 var(--mono);letter-spacing:.1em;color:#cff9ff;border:1px solid rgba(34,211,238,.3);background:rgba(5,7,13,.6);padding:6px 9px;border-radius:6px}
+  .stage2 .hint{position:absolute;bottom:10px;left:12px;font:500 11px/1 var(--mono);color:var(--mut-2);transition:opacity .4s}
+
+  /* ---------- tools ---------- */
+  .cleaner{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  textarea{
+    width:100%;min-height:186px;resize:vertical;border-radius:var(--r-sm);border:1px solid var(--line);
+    background:#04060b;color:#cfe0f5;padding:13px 14px;font:13px/1.7 var(--mono);outline:none
+  }
+  textarea:focus{border-color:rgba(34,211,238,.45);box-shadow:0 0 0 3px rgba(34,211,238,.1)}
+  .tool-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+  .count{font:600 12.5px/1 var(--mono);color:var(--mut)}
+  .opt{display:inline-flex;align-items:center;gap:7px;font-size:12.8px;color:var(--mut);cursor:pointer;user-select:none}
+  .opt input{accent-color:var(--cyan);width:14px;height:14px;cursor:pointer}
+
+  /* ---------- faq ---------- */
+  details.faq{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);margin-bottom:10px;overflow:hidden}
+  details.faq[open]{border-color:var(--line-2);background:var(--panel-2)}
+  details.faq summary{
+    cursor:pointer;padding:17px 20px;font-weight:620;font-size:15.4px;list-style:none;
+    display:flex;align-items:center;gap:12px
+  }
+  details.faq summary::-webkit-details-marker{display:none}
+  details.faq summary::after{content:"+";margin-left:auto;color:var(--cyan);font:400 20px/1 var(--mono)}
+  details.faq[open] summary::after{content:"–"}
+  details.faq .a{padding:0 20px 18px;color:var(--mut);font-size:14.6px}
+  details.faq .a code{background:rgba(255,255,255,.06);border:1px solid var(--line);padding:1px 5px;border-radius:5px;font-size:12.6px;color:#cff9ff}
+
+  /* ---------- cta ---------- */
+  .cta{
+    border:1px solid var(--line);border-radius:22px;padding:48px 44px;text-align:center;
+    background:radial-gradient(700px 320px at 50% 0%,rgba(34,211,238,.13),transparent 68%),var(--panel)
+  }
+  .cta h2{margin-bottom:14px}
+  .cta p{color:var(--mut);max-width:60ch;margin:0 auto}
+  .cta .hero-actions{justify-content:center}
+
+  /* ---------- safety ---------- */
+  .safe{border:1px solid rgba(251,191,36,.26);background:rgba(251,191,36,.05);border-radius:var(--r);padding:26px 28px}
+  .safe h3{color:#fde68a;margin-bottom:14px;display:flex;align-items:center;gap:10px}
+  .safe ol{margin:0;padding-left:20px;color:#d6c9a6;font-size:14.6px}
+  .safe li{margin-bottom:9px}
+  .safe b{color:#fef3c7}
+
+  /* ---------- footer ---------- */
+  footer{border-top:1px solid var(--line);margin-top:40px;padding:52px 0 34px;position:relative;z-index:1}
+  .f-grid{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:32px}
+  .f-grid h4{font:600 11.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--mut-2);margin-bottom:15px}
+  .f-grid ul{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+  .f-grid li a{color:var(--mut);font-size:14.3px}
+  .f-grid li a:hover{color:var(--txt)}
+  .f-about p{color:var(--mut);font-size:14.2px;margin-top:14px;max-width:38ch}
+  .f-bottom{
+    margin-top:44px;padding-top:22px;border-top:1px solid var(--line);display:flex;justify-content:space-between;
+    gap:18px;flex-wrap:wrap;font-size:12.8px;color:var(--mut-2)
+  }
+
+  @media (max-width:980px){
+    .hero{grid-template-columns:1fr;gap:38px;padding-top:52px}
+    .g3{grid-template-columns:repeat(2,1fr)}
+    .viewer{grid-template-columns:1fr}
+    .cleaner{grid-template-columns:1fr}
+    .f-grid{grid-template-columns:1fr 1fr;gap:26px}
+    nav.links{display:none}
+  }
+  @media (max-width:640px){
+    section{padding:66px 0}
+    .g3,.g2{grid-template-columns:1fr}
+    .strip{grid-template-columns:1fr 1fr}
+    .cta{padding:34px 22px}
+    .step{grid-template-columns:1fr;gap:12px}
+    .flow::before{display:none}
+    .step .num{width:44px;height:44px;font-size:15px;border-radius:12px}
+    .f-grid{grid-template-columns:1fr}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+    html{scroll-behavior:auto}
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top">
+      <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="8" fill="rgba(34,211,238,.08)" stroke="rgba(34,211,238,.35)"/>
+        <path d="M7.5 22.5C12 11 20 8.5 25 8.5" stroke="#22d3ee" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+        <circle cx="7.5" cy="22.5" r="3" fill="#a855f7"/>
+        <circle cx="25" cy="8.5" r="3" fill="#22d3ee"/>
+      </svg>
+      ISpooferMotion
+      <span class="tag">docs</span>
+    </a>
+    <nav class="links">
+      <a href="#web">Web Spoofer</a>
+      <a href="#fitur">Fitur</a>
+      <a href="#cara">Cara Kerja</a>
+      <a href="#playground">Playground</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn sm primary" href="spoof.html">Buka Web Spoofer</a>
+      <a class="btn sm ghost" href="https://github.com/ISpooferMotion/ISpooferMotion-V2/releases/latest" target="_blank" rel="noopener">Download</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+<div class="wrap">
+
+  <!-- ============ HERO ============ -->
+  <section class="hero" style="padding-bottom:0">
+    <div>
+      <span class="pill"><span class="dot"></span> Status: working · V2.7.0 aktif · web spoofer tersedia</span>
+      <h1>Scan, fetch, dan <span class="grad">re-upload asset Roblox</span> tanpa edit instance manual.</h1>
+      <p class="lede">
+        <b>ISpooferMotion (ISM)</b> adalah utility desktop open source untuk Roblox Studio. Tempel asset ID dari place-mu,
+        app mengambil asetnya, meng-upload balik ke akun atau grup milikmu, lalu plugin Studio mengganti
+        <code style="font-size:13px">Animation</code> object dan ID di dalam script secara otomatis. V2 menambahkan
+        preview R6/R15, profiles, dan place browser.
+      </p>
+      <div class="hero-actions">
+        <a class="btn primary" href="spoof.html">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+          Buka Web Spoofer
+        </a>
+        <a class="btn" href="https://github.com/ISpooferMotion/ISpooferMotion-V2/releases/latest" target="_blank" rel="noopener">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 12 5 5 5-5"/><path d="M5 21h14"/></svg>
+          Download V2
+        </a>
+        <a class="btn ghost" href="https://discord.gg/d5cJzAURBH" target="_blank" rel="noopener">Discord</a>
+      </div>
+      <div class="chips">
+        <span class="chip v">V2.7.0</span>
+        <span class="chip c">Web spoofer: online</span>
+        <span class="chip">Tauri 2 · Rust · React 19 · Luau</span>
+        <span class="chip c">GPL-3.0-or-later</span>
+        <span class="chip">Windows · macOS · Linux</span>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-bar"><i></i><i></i><i></i><span>ISpooferMotion — animation preview</span></div>
+      <canvas id="heroCanvas" width="760" height="760" aria-label="Preview animasi R15 yang diputar langsung di browser"></canvas>
+      <div class="stage-foot">
+        <span><span class="k">R15</span> · preview langsung, dirender di browser kamu</span>
+        <span id="heroFpsLabel">—</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="strip">
+    <div><div class="n">2.7.0</div><div class="l">Rilis V2 terbaru (Tauri 2)</div></div>
+    <div><div class="n">5 tipe</div><div class="l">Animasi · Sound · Decal · Mesh · Video</div></div>
+    <div><div class="n">R6 + R15</div><div class="l">Preview rig sebelum replace</div></div>
+    <div><div class="n">0 cookie</div><div class="l">Web spoofer pakai Open Cloud API key / OAuth</div></div>
+  </div>
+
+  <hr class="hr" style="margin-top:64px">
+
+  <!-- ============ WEB SPOOFER ============ -->
+  <section id="web">
+    <div class="sec-head">
+      <div class="eyebrow">Baru · tanpa install</div>
+      <h2>Web Spoofer: masukkan ID, keluar ID baru</h2>
+      <p>
+        Alur inti ISpooferMotion yang dulu hanya ada di app desktop sekarang bisa dijalankan dari browser.
+        Tempel daftar asset ID → server mengambil isinya → upload balik ke akun atau grup milikmu lewat
+        <b>Open Cloud Assets API</b> resmi Roblox → hasilnya siap ditempel ke plugin Studio.
+      </p>
+    </div>
+
+    <div class="grid g3">
+      <div class="card">
+        <span class="vtag v2">WEB</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M12 3v10"/><path d="m8 9 4 4 4-4"/><rect x="4" y="15" width="16" height="6" rx="2"/></svg></span> 1 · Ambil isi aset</h3>
+        <p>
+          Endpoint delivery Roblox ternyata mengembalikan isi aset <b>tanpa perlu login sama sekali</b> — termasuk animasi.
+          Jadi langkah ini tidak menyentuh kredensial apa pun: server cuma minta lokasi CDN, mengunduh bytenya, dan mencatat hash-nya.
+        </p>
+      </div>
+      <div class="card">
+        <span class="vtag v2">WEB</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M12 3.5v9"/><circle cx="12" cy="16.5" r="4.5"/><path d="M12 12.5v4"/></svg></span> 2 · Upload atas namamu</h3>
+        <p>
+          Upload memakai API resmi Roblox dengan <b>Open Cloud API key</b> (scope <span class="mono">asset:write</span>) atau
+          <b>login OAuth 2.0</b>. Tidak ada cookie akun yang diminta, disimpan, atau diteruskan — dan itu bisa dibuktikan di source-nya.
+        </p>
+      </div>
+      <div class="card">
+        <span class="vtag v2">WEB</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M8 15l2.5-3 2 2L15 10l2.5 3.5"/></svg></span> 3 · Tempel ke plugin</h3>
+        <p>
+          Hasilnya keluar dalam format yang <b>persis</b> diminta tombol <b>Replace Ids</b> — <span class="mono">id_lama = id_baru,</span> satu per baris.
+          Tempel, Run, dan plugin menukar <span class="mono">Animation</span> object serta referensi ID di dalam script.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card">
+        <h3>Batasan yang jujur</h3>
+        <p>
+          • <b>Butuh server kecil.</b> Upload mustahil dilakukan murni dari browser: endpoint Roblox kena CORS, dan cookie akun tidak
+          boleh masuk ke web. Jadi server Node-nya jalan di komputermu sendiri — satu perintah, tanpa install aplikasi desktop.<br><br>
+          • <b>Audio (Sound) masih butuh file lokal.</b> Isi audio di balik otentikasi, jadi untuk sound pakai mode
+          <i>dari file lokal</i>: kamu sediakan filenya, server mengurus upload-nya.<br><br>
+          • <b>Bukan semua ID publik.</b> Saat saya uji 15 animasi populer, 9 bisa ditarik tanpa login dan 6 ditolak. Yang ditolak
+          harus kamu sediakan sendiri filenya.<br><br>
+          • <b>Tetap sama aturannya:</b> hanya proses aset yang kamu punya hak atau izinnya.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Cara menjalankan</h3>
+        <div class="term" style="margin-top:12px">
+          <div class="t-bar"><span>terminal</span><span>node 20+</span></div>
+          <pre><span class="di"># jalankan server + situs dari satu perintah</span>
+<span class="in">node ism-web/server.mjs</span>
+
+<span class="di"># lalu buka</span>
+http://localhost:8787/spoof.html</pre>
+        </div>
+        <p style="margin-top:14px">
+          Butuh <b>Open Cloud API key</b> dengan API <b>Assets</b> (operasi Read + Write) — dibuat di
+          create.roblox.com → Credentials → API Keys. Atau daftarkan OAuth 2.0 app dengan scope
+          <span class="mono">asset:read asset:write</span> dan login lewat tombol di halaman spoofer.
+        </p>
+        <p class="note">
+          Kunci API-nya tidak pernah ditulis ke disk dan tidak pernah masuk log. Kalau kamu memakai kunci server
+          (<span class="mono">ROBLOX_API_KEY</span>), user yang membuka halaman bahkan tidak perlu mengisi apa pun.
+        </p>
+      </div>
+    </div>
+
+    <div class="hero-actions" style="margin-top:22px">
+      <a class="btn primary" href="spoof.html">Buka Web Spoofer</a>
+      <a class="btn" href="https://create.roblox.com/docs/cloud/guides/usage-assets" target="_blank" rel="noopener">Panduan Assets API (Roblox)</a>
+      <a class="btn ghost" href="https://create.roblox.com/credentials" target="_blank" rel="noopener">Buat API key</a>
+    </div>
+  </section>
+
+  <hr class="hr">
+
+  <!-- ============ FITUR ============ -->
+  <section id="fitur">
+    <div class="sec-head">
+      <div class="eyebrow">Fitur</div>
+      <h2>Yang bisa dilakukan ISpooferMotion</h2>
+      <p>Dikumpulkan langsung dari repo resmi <b>V1 (Electron)</b> dan <b>V2 (Tauri + Rust)</b>. Setiap kartu ditandai versi yang menyediakannya.</p>
+    </div>
+
+    <div class="grid g3">
+      <div class="card">
+        <span class="vtag v2">V2</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h12"/><circle cx="18.5" cy="17" r="2.5"/></svg></span> Replace se-place penuh</h3>
+        <p>Scan seluruh place dalam sekali jalan dan ganti animation, sound, decal, mesh, serta video tanpa menyusuri instance satu per satu secara manual.</p>
+      </div>
+      <div class="card">
+        <span class="vtag v2">V2</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg></span> Preview R6 &amp; R15</h3>
+        <p>Putar animasi R6 dan R15 langsung di app, dan dengarkan audio asset sebelum kamu menerapkan replacement-nya.</p>
+      </div>
+      <div class="card">
+        <span class="vtag v2">V2</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M4.5 20c1.2-3.8 4-5.6 7.5-5.6S18.3 16.2 19.5 20"/></svg></span> Profiles</h3>
+        <p>Kelola beberapa user dan grup Roblox dengan data terisolasi. Kredensial disimpan lewat credential store milik OS, bukan file teks biasa.</p>
+      </div>
+      <div class="card">
+        <span class="vtag v2">V2</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="12.5" width="7" height="7" rx="1.5"/><path d="M10.5 8h5a2 2 0 0 1 2 2v2.5"/></svg></span> Place browser</h3>
+        <p>Telusuri asset tree, inspect property instance, lacak di mana sebuah ID direferensikan, lalu copy asset ID-nya dalam satu klik.</p>
+      </div>
+      <div class="card">
+        <span class="vtag v1">V1</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M12 3v10"/><path d="m8 9 4 4 4-4"/><rect x="4" y="15" width="16" height="6" rx="2"/></svg></span> Upload instan + Group upload</h3>
+        <p>Masukkan asset ID, jalankan, lalu tunggu output. Bisa diarahkan ke akun pribadi atau ke <b>Group ID</b> yang kamu punya izin upload di dalamnya.</p>
+      </div>
+      <div class="card">
+        <span class="vtag v1">V1</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M8 15l2.5-3 2 2L15 10l2.5 3.5"/></svg></span> Upload animasi + sound</h3>
+        <p>Sejak v1.3.18 app menangani animasi dan sound sekaligus, dengan marker tipe per baris dan pemeriksaan kuota untuk audio asset.</p>
+      </div>
+      <div class="card">
+        <span class="vtag v2">V2</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M10 4.5H6.5A2 2 0 0 0 4.5 6.5V10M14 4.5h3.5a2 2 0 0 1 2 2V10M10 19.5H6.5a2 2 0 0 1-2-2V14M14 19.5h3.5a2 2 0 0 0 2-2V14"/></svg></span> Plugin Studio bundled</h3>
+        <p>Plugin <code>ISpooferMotion.rbxmx</code> disertakan di setiap rilis dan otomatis disinkronkan ke folder plugin Roblox Studio saat app dijalankan.</p>
+      </div>
+      <div class="card">
+        <span class="vtag">BOTH</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M4 17V7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg></span> Cross-platform &amp; jalur web</h3>
+        <p>Rilis untuk Windows (<code>.exe</code>), macOS (<code>.dmg</code>), dan Linux (<code>.AppImage</code>), dilengkapi updater otomatis.</p>
+      </div>
+      <div class="card">
+        <span class="vtag v1">V1</span>
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M12 3.5 4.5 7v5c0 4.5 3 7.4 7.5 8.5 4.5-1.1 7.5-4 7.5-8.5V7z"/><path d="m9 12.5 2 2 4-4.5"/></svg></span> Telemetry bisa dimatikan</h3>
+        <p>Sejak v1.3.20 ada tombol <b>Anonymous Usage Telemetry</b> di Settings. Default menyala, tapi bisa dimatikan dan langsung berlaku tanpa restart.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="hr">
+
+  <!-- ============ CARA KERJA ============ -->
+  <section id="cara">
+    <div class="sec-head">
+      <div class="eyebrow">Cara Kerja</div>
+      <h2>Empat langkah dari ID lama ke ID baru</h2>
+      <p>Alur ini yang dipakai versi desktop. Semua langkah di bawah dijalankan di komputer kamu sendiri — app yang memegang sesinya, bukan server pihak ketiga.</p>
+    </div>
+
+    <div class="flow">
+      <div class="step">
+        <div class="num">01</div>
+        <div class="body">
+          <h3>Kumpulkan asset ID</h3>
+          <p>Buka place di Roblox Studio, tekan tombol <b>Get Ids</b> di plugin ISpooferMotion, lalu copy seluruh isi textbox-nya. Bisa juga tempel ID secara manual kalau kamu sudah tahu targetnya.</p>
+          <div class="term">
+            <div class="t-bar"><span>plugin → Get Ids</span><span>contoh keluaran</span></div>
+            <pre><span class="di">-- animation &amp; sound yang terdeteksi di place</span>
+<span class="id">1234567890</span>   <span class="di">Animation  (R15 run)</span>
+<span class="id">1234567891</span>   <span class="di">Animation  (R15 idle)</span>
+<span class="id">5678901234</span>   <span class="di">Sound      (footstep)</span>
+<span class="ok">26 asset ditemukan</span></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">02</div>
+        <div class="body">
+          <h3>Tempel ke app &amp; pilih akun</h3>
+          <p>Paste daftar ID ke textbox di app, pilih profile akun (atau Group ID) yang mau dipakai sebagai tujuan upload. Di V2 kredensial per profile dipegang oleh credential store OS.</p>
+          <div class="term">
+            <div class="t-bar"><span>ISpooferMotion</span><span>profiles</span></div>
+            <pre><span class="di">profile</span>  main-account   <span class="ok">✓ tersimpan di OS keychain</span>
+<span class="di">target </span>  akun pribadi <span class="di">/</span> Group ID <span class="id">33445566</span>
+<span class="di">input  </span> 26 baris· <span class="ok">valid</span></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">03</div>
+        <div class="body">
+          <h3>Fetch → re-upload, satu pipeline</h3>
+          <p>App mengambil tiap aset memakai sesi milikmu, lalu meng-upload balik ke akun/grup tersebut sehingga kamu mendapat <b>asset ID baru</b> yang dimiliki profile itu. Kamu tidak perlu menyimpan file-nya ke disk lebih dulu. <b>Web Spoofer</b> melakukan dua langkah ini juga, tapi lewat Open Cloud API key/OAuth — tanpa app desktop dan tanpa sesi akun.</p>
+          <div class="term">
+            <div class="t-bar"><span>Run Spoofer</span><span>log</span></div>
+            <pre>[<span class="in">1/26</span>] fetch  rbxassetid://1234567890  <span class="ok">ok</span>
+[<span class="in">1/26</span>] upload → <span class="id">9876543210</span>              <span class="ok">ok</span>
+[<span class="in">2/26</span>] fetch  rbxassetid://1234567891  <span class="ok">ok</span>
+[<span class="in">2/26</span>] upload → <span class="id">9876543211</span>              <span class="ok">ok</span>
+…
+<span class="ok">26/26 selesai — 26 ID baru siap dipakai</span></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">04</div>
+        <div class="body">
+          <h3>Replace di Studio</h3>
+          <p>Copy output-nya, kembali ke Studio, tekan <b>Replace Ids</b> di plugin, tempel, lalu Run. Plugin mengganti <code>Animation</code> object dan ID yang tertulis di dalam script — termasuk referensi yang tersembunyi di dalam kode.</p>
+          <div class="term">
+            <div class="t-bar"><span>plugin → Replace Ids</span><span>hasil</span></div>
+            <pre><span class="di">Animation object</span>  14 diganti  <span class="ok">✓</span>
+<span class="di">referensi di script</span> 12 diganti  <span class="ok">✓</span>
+<span class="di">sound / audio</span>        0 diganti  <span class="ok">✓</span>
+<span class="ok">place siap — jalankan dan cek hasilnya</span></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="hr">
+
+  <!-- ============ PLAYGROUND ============ -->
+  <section id="playground">
+    <div class="sec-head">
+      <div class="eyebrow">Playground · 100% offline</div>
+      <h2>Lihat isi file animasi Roblox di browser</h2>
+      <p>Bagian ini berjalan <b>sepenuhnya di browser kamu</b>: tidak ada login, tidak ada cookie, tidak ada yang dikirim ke server mana pun. Drop file <code>.rbxmx</code> / <code>.rbxm</code> berisi <code>KeyframeSequence</code>, dan animasinya langsung diparse serta diputar di sini — mirip preview R6/R15 di app desktop, versi web.</p>
+    </div>
+
+    <div class="viewer">
+      <div class="panel">
+        <h3>1 · Pilih sumber animasi</h3>
+        <div class="seg" role="group" aria-label="Pilih contoh animasi">
+          <button type="button" data-preset="idle" aria-pressed="false">Idle</button>
+          <button type="button" data-preset="wave" aria-pressed="true">Wave</button>
+          <button type="button" data-preset="walk" aria-pressed="false">Walk</button>
+        </div>
+        <div class="drop" id="drop" tabindex="0" role="button" aria-label="Drop file rbxmx">
+          <strong>Drop file <code>.rbxmx</code> di sini</strong>
+          <span>atau klik untuk memilih file · KeyframeSequence R6 &amp; R15 · diproses lokal</span>
+          <input type="file" id="file" accept=".rbxmx,.rbxm,.xml,text/xml" hidden>
+        </div>
+        <div class="notice" id="notice"></div>
+
+        <h3 style="margin-top:22px">2 · Kontrol playback</h3>
+        <div class="ctl">
+          <button class="btn sm" id="playBtn" type="button">
+            <svg class="ico" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>
+            <span id="playLabel">Pause</span>
+          </button>
+          <input type="range" id="scrub" min="0" max="2" step="0.005" value="0" aria-label="Timeline animasi">
+          <span class="time" id="timeLabel">0.00 / 2.00s</span>
+        </div>
+        <div class="tool-row">
+          <button class="btn sm" id="loopBtn" type="button" aria-pressed="true">Loop: on</button>
+          <button class="btn sm" id="speedBtn" type="button">Speed: 1×</button>
+          <button class="btn sm" id="resetCam" type="button">Reset kamera</button>
+          <button class="btn sm" id="pngBtn" type="button">Simpan PNG</button>
+        </div>
+        <p class="note">Drag di canvas untuk memutar kamera, scroll untuk zoom. Semua kontrol juga bisa dipakai saat animasi sedang berjalan.</p>
+
+        <div class="mini-stats" id="stats">
+          <div><div class="k">Sequence</div><div class="v" id="sName">—</div></div>
+          <div><div class="k">Sumber</div><div class="v" id="sSource">—</div></div>
+          <div><div class="k">Durasi</div><div class="v" id="sDur">—</div></div>
+          <div><div class="k">Keyframe</div><div class="v" id="sKeys">—</div></div>
+          <div><div class="k">Joint</div><div class="v" id="sJoints">—</div></div>
+          <div><div class="k">Loop</div><div class="v" id="sLoop">—</div></div>
+        </div>
+
+        <div class="joints" id="jointList" aria-label="Daftar joint"></div>
+      </div>
+
+      <div class="stage2">
+        <canvas id="view" width="900" height="675" aria-label="Viewer animasi 3D"></canvas>
+        <div class="badge" id="modeBadge">R15 · PRESET</div>
+        <div class="hint" id="hint">drag = orbit · scroll = zoom</div>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:18px">
+      <div class="card">
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M12 12v9M4 7.5 12 12l8-4.5"/></svg></span> Format yang dibaca</h3>
+        <p><code>.rbxmx</code> / <code>.rbxm</code> / <code>.xml</code> berisi <code>Item class="KeyframeSequence"</code>, dengan <code>Pose</code> bertingkat maupun datar, dan rotasi modern <code>CFrame</code> (<code>R00…R22</code>) atau format lama <code>EulerRotation</code>. File <code>.rbx</code> biner tidak didukung — simpan ulang sebagai XML dari Studio.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico-box"><svg viewBox="0 0 24 24"><path d="M12 3.5v9"/><circle cx="12" cy="16.5" r="4.5"/><path d="M12 12.5v4"/></svg></span> Interpolasi standar</h3>
+        <p>Posisi diinterpolasi linear, rotasi pakai <b>slerp</b> antar keyframe — sama seperti cara engine memutar animasi. Joint yang tidak dipose di sebuah keyframe otomatis memakai nilai keyframe sebelumnya.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="hr">
+
+  <!-- ============ TOOLS ============ -->
+  <section id="tools">
+    <div class="sec-head">
+      <div class="eyebrow">Tools</div>
+      <h2>Rapikan daftar asset ID sebelum masuk ke app</h2>
+      <p>Tempel apa saja: keluaran <b>Get Ids</b> dari plugin, link <code>roblox.com/library/…</code>, ID mentah, atau campurannya. Semua dibersihkan jadi satu ID per baris — <b>urut, unik, siap copy</b>. Proses ini jalan di browser kamu, tidak ada data yang dikirim keluar.</p>
+    </div>
+
+    <div class="cleaner">
+      <div class="panel">
+        <h3>Input mentah</h3>
+        <textarea id="rawIn" spellcheck="false" placeholder="https://www.roblox.com/library/1234567890/Run-Animation
+rbxassetid://1234567891
+1234567890
+Sound: 5678901234
+&nbsp;-- catatan bebas boleh dibuang
+1234567892"></textarea>
+        <div class="tool-row">
+          <button class="btn sm" id="cleanBtn" type="button">Bersihkan</button>
+          <button class="btn sm ghost" id="sampleBtn" type="button">Isi contoh</button>
+          <button class="btn sm ghost" id="rawClear" type="button">Kosongkan</button>
+          <label class="opt"><input type="checkbox" id="shortIds"> sertakan angka 4–5 digit</label>
+          <span class="count" id="rawCount"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Output bersih</h3>
+        <textarea id="cleanOut" spellcheck="false" readonly placeholder="Satu asset ID per baris akan muncul di sini…"></textarea>
+        <div class="tool-row">
+          <button class="btn sm" id="copyBtn" type="button">Copy semua</button>
+          <button class="btn sm ghost" id="dlBtn" type="button">Download .txt</button>
+          <span class="count" id="outCount"></span>
+        </div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:14px">
+      Tips: kalau baris di keluaran plugin menyertakan penanda tipe seperti <code>[Type:Animation]</code> atau <code>[Type:Sound]</code>,
+      penanda itu bisa dibiarkan menempel di baris yang sama — alat ini hanya mengambil angka ID-nya dan membuang teks lain.
+    </p>
+  </section>
+
+  <hr class="hr">
+
+  <!-- ============ FAQ ============ -->
+  <section id="faq">
+    <div class="sec-head">
+      <div class="eyebrow">FAQ</div>
+      <h2>Pertanyaan yang sering muncul</h2>
+    </div>
+
+    <details class="faq" open>
+      <summary>Apa bedanya V1 dan V2?</summary>
+      <div class="a">
+        <b>V1</b> (<code>ISpooferMotion</code>) adalah animation spoofer/re-uploader klasik berbasis Electron: tempel ID → upload → replace lewat plugin Studio. Rilisan terakhirnya v1.3.20.<br><br>
+        <b>V2</b> (<code>ISpooferMotion-V2</code>) ditulis ulang dengan <b>Tauri 2 + Rust + React 19 + Luau</b>. Cakupannya lebih luas — bukan cuma animasi, tapi juga sound, decal, mesh, dan video; ditambah preview R6/R15, profiles per user/grup, dan place browser untuk menelusuri asset tree. Kalau kamu mulai dari nol sekarang, ambil V2.
+      </div>
+    </details>
+    <details class="faq">
+      <summary>Kenapa butuh akun Roblox / kredensial?</summary>
+      <div class="a">
+        Upload asset hanya bisa dilakukan atas nama akun yang punya izin, jadi selalu ada kredensial yang terlibat — tapi bentuknya beda:
+        <br><br>
+        • <b>Web Spoofer</b> memakai <b>Open Cloud API key</b> (scope <span class="mono">asset:read</span>/<span class="mono">asset:write</span>) atau <b>login OAuth 2.0</b>. API key bisa dibatasi hanya ke operasi Assets, dicabut kapan saja, dan bahkan diberi batas IP. <b>Tidak ada cookie akun sama sekali.</b>
+        <br><br>
+        • <b>App desktop V1/V2</b> memakai sesi login milikmu — V1 lewat deteksi sesi otomatis atau input manual, V2 lewat <b>profiles</b> dengan credential store milik OS. Di situ sesi dipegang komputer kamu sendiri, bukan server orang lain.
+      </div>
+    </details>
+    <details class="faq">
+      <summary>Apakah aman menempelkan cookie / sesi login?</summary>
+      <div class="a">
+        Sesi login Roblox setara <b>kunci penuh akunmu</b>: siapa pun yang memegangnya bisa masuk tanpa password dan tanpa 2FA. Karena itu aturannya sederhana:
+        <br><br>
+        1. Pakai <b>akun alt/burner</b> untuk eksperimen, bukan akun utama.<br>
+        2. Hanya masukkan sesi ke <b>app desktop resmi</b> yang kamu jalankan sendiri di komputer kamu.<br>
+        3. <b>Jangan pernah</b> menempelkan cookie Roblox ke website, form, atau "tool online" apa pun — termasuk halaman ini. Situs ini memang sengaja tidak punya kolom login sama sekali: playground di atas cuma membaca file lokal di browser kamu.
+      </div>
+    </details>
+    <details class="faq">
+      <summary>Bisa dipakai langsung dari browser / HP?</summary>
+      <div class="a">
+        <b>Ya, untuk animasi.</b> <a href="spoof.html">Web Spoofer</a> menjalankan alur lengkap: isi daftar ID → ambil isi aset → upload balik → keluarkan <span class="mono">id_lama = id_baru,</span> siap tempel ke plugin Studio. Bedanya dengan app desktop cuma satu: butuh server Node kecil yang kamu jalankan sendiri (satu perintah), karena endpoint upload Roblox kena CORS dan cookie akun tidak boleh lewat web.<br><br>
+        Jadi dari HP pun bisa, asal servernya jalan di suatu tempat yang bisa kamu akses. Yang tetap perlu app desktop: hal-hal yang menyentuh place secara langsung (scan seluruh place, preview R6/R15 di dalam Studio, place browser V2).
+      </div>
+    </details>
+    <details class="faq">
+      <summary>Windows Defender / antivirus saya menandai build-nya. Kenapa?</summary>
+      <div class="a">
+        Rilis ISpooferMotion <b>belum di-code signing</b>, dan build aplikasi yang menyentuh kredensial memang sering kena deteksi heuristik. Ini disebutkan sendiri di README resmi V2. Kalau kamu tidak nyaman dengan build bawaan, kamu bisa <b>compile sendiri dari source</b> (<code>bun install</code> lalu <code>bun run tauri:dev</code>) dan memverifikasi kodenya.
+        <br><br>
+        Kalau kamu memang ingin menghindari installer sama sekali, <b>Web Spoofer</b> adalah jalur yang lebih ringan: tidak ada binary, tidak ada installer, dan kamu bisa membaca sendiri kode servernya sebelum menjalankannya.
+      </div>
+    </details>
+    <details class="faq">
+      <summary>Apakah ini melanggar aturan Roblox / bisa kena ban?</summary>
+      <div class="a">
+        Otomasi upload memakai sesi akun adalah area abu-abu, dan tanggung jawab pemakaian ada di kamu. Yang jelasnya begini: <b>hanya re-upload aset yang kamu punya hak atau izinnya</b> — misalnya animasi buatanmu sendiri, aset tim/studi kamu, atau aset yang pemiliknya sudah memberi izin. Mengambil aset milik kreator lain tanpa izin bukan cuma melanggar aturan platform, tapi juga hak cipta mereka. Gunakan akun alt dan pahami risikonya.
+      </div>
+    </details>
+    <details class="faq">
+      <summary>Bagaimana cara berkontribusi atau lapor bug?</summary>
+      <div class="a">
+        Project ini GPL-3.0-or-later dan terbuka untuk PR. Baca <code>.github/CONTRIBUTING.md</code>, branch dari <code>main</code>, pakai <a href="https://www.conventionalcommits.org/" target="_blank" rel="noopener">Conventional Commits</a>, dan pastikan <code>bun run check</code> lolos sebelum push. Bug dan permintaan fitur lewat tab Issues di repo V2.
+      </div>
+    </details>
+  </section>
+
+  <hr class="hr">
+
+  <!-- ============ SAFETY ============ -->
+  <section style="padding-bottom:40px">
+    <div class="safe">
+      <h3>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 4.5 7v5c0 4.5 3 7.4 7.5 8.5 4.5-1.1 7.5-4 7.5-8.5V7z"/><path d="M12 9v4"/><circle cx="12" cy="16" r=".6" fill="#fbbf24"/></svg>
+        Baca ini sebelum menjalankan
+      </h3>
+      <ol>
+        <li><b>Sesi login = kunci penuh akun.</b> Simpan hanya di app desktop yang kamu jalankan sendiri, dan latih dulu dengan akun alt. Tidak ada tool online tepercaya untuk hal ini — kalau ada situs yang meminta cookie Roblox-mu, itu polanya sama dengan phishing. <b>Web Spoofer tidak butuh cookie sama sekali</b>, jadi kalau ada "situs spoofer" yang memintanya, jangan.</li>
+        <li><b>Hanya proses aset yang kamu berhak.</b> Re-upload karya orang lain tanpa izin = pelanggaran aturan platform sekaligus hak cipta.</li>
+        <li><b>Verifikasi build.</b> Rilis belum code-signed, jadi antivirus bisa memberi false positive. Sumber lengkapnya ada di GitHub kalau kamu ingin membangun sendiri.</li>
+        <li><b>Untuk jalur web:</b> pakai API key yang dibatasi operasinya (hanya Assets), pasang batas IP kalau bisa, dan jangan pakai kunci yang sama dengan proyek lain. Kalau kamu memakai OAuth, scope-nya cuma <span class="mono">asset:read asset:write</span> dan bisa dicabut dari akun Roblox-mu kapan saja.</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ CTA ============ -->
+  <section style="padding-top:40px">
+    <div class="cta">
+      <h2>Ambil rilis terbaru dan mulai dari place-mu</h2>
+      <p>Tersedia untuk Windows, macOS, dan Linux. Plugin Roblox Studio sudah ikut di dalam paketnya — tinggal jalankan app-nya sekali untuk sinkronisasi.</p>
+      <div class="hero-actions">
+        <a class="btn primary" href="spoof.html">Buka Web Spoofer</a>
+        <a class="btn" href="https://github.com/ISpooferMotion/ISpooferMotion-V2/releases/latest" target="_blank" rel="noopener">Download V2 (Tauri)</a>
+        <a class="btn" href="https://github.com/ISpooferMotion/ISpooferMotion/releases" target="_blank" rel="noopener">Rilis V1 (Electron)</a>
+        <a class="btn ghost" href="https://create.roblox.com/store/asset/77166107193979/ISpooferMotion" target="_blank" rel="noopener">Plugin di Roblox</a>
+      </div>
+      <div class="chips" style="justify-content:center">
+        <span class="chip">Windows .exe</span>
+        <span class="chip">macOS .dmg</span>
+        <span class="chip">Linux .AppImage</span>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="f-grid">
+      <div class="f-about">
+        <a class="brand" href="#top">
+          <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="rgba(34,211,238,.08)" stroke="rgba(34,211,238,.35)"/>
+            <path d="M7.5 22.5C12 11 20 8.5 25 8.5" stroke="#22d3ee" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+            <circle cx="7.5" cy="22.5" r="3" fill="#a855f7"/>
+            <circle cx="25" cy="8.5" r="3" fill="#22d3ee"/>
+          </svg>
+          ISpooferMotion
+        </a>
+        <p>Utility open source untuk scan, preview, dan replace asset Roblox Studio. Dilisensikan <b>GPL-3.0-or-later</b>.</p>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/ISpooferMotion/ISpooferMotion-V2" target="_blank" rel="noopener">Repo V2 (Tauri)</a></li>
+          <li><a href="https://github.com/ISpooferMotion/ISpooferMotion" target="_blank" rel="noopener">Repo V1 (Electron)</a></li>
+          <li><a href="https://github.com/ISpooferMotion/ISpooferMotion-V2/releases" target="_blank" rel="noopener">Semua rilis</a></li>
+          <li><a href="https://github.com/ISpooferMotion/ISpooferMotion-V2/issues" target="_blank" rel="noopener">Issues &amp; bug report</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Dokumentasi</h4>
+        <ul>
+          <li><a href="spoof.html">Web Spoofer</a></li>
+          <li><a href="https://create.roblox.com/docs/cloud/guides/usage-assets" target="_blank" rel="noopener">Panduan Assets API</a></li>
+          <li><a href="https://raw.githubusercontent.com/ISpooferMotion/ISpooferMotion-V2/main/README.md" target="_blank" rel="noopener">README V2</a></li>
+          <li><a href="https://raw.githubusercontent.com/ISpooferMotion/ISpooferMotion/main/README.md" target="_blank" rel="noopener">README V1</a></li>
+          <li><a href="https://create.roblox.com/store/asset/77166107193979/ISpooferMotion" target="_blank" rel="noopener">Plugin Studio</a></li>
+          <li><a href="https://discord.gg/d5cJzAURBH" target="_blank" rel="noopener">Discord komunitas</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="https://github.com/ISpooferMotion/ISpooferMotion-V2/blob/main/LICENSE" target="_blank" rel="noopener">Lisensi GPL-3.0</a></li>
+          <li><a href="#faq">Catatan pemakaian</a></li>
+          <li><a href="#tools">Alat bantu lokal</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="f-bottom">
+      <span>ISpooferMotion dibuat oleh IncredibroXP (IncrediDev) dan kontributor. Halaman ini adalah dokumentasi &amp; playground berbasis web untuk project tersebut.</span>
+      <span>Tidak berafiliasi dengan Roblox Corporation. Roblox adalah trademark milik Roblox Corporation.</span>
+    </div>
+  </div>
+</footer>
+</main>
+
+<script>
+/* =========================================================================
+   ISM-CORE  —  logika murni (tanpa DOM).
+   Berisi: parser XML mini, parser KeyframeSequence .rbxmx, matematika
+   quaternion/CFrame, sampler animasi, rig R15, dan generator animasi contoh.
+   Blok ini juga dipakai oleh test di tests/core.test.mjs (diekstrak via marker).
+   ========================================================================= */
+/* ===== ISM-CORE-START ===== */
+var ISMCore = (function () {
+  "use strict";
+
+  var DEG = Math.PI / 180;
+
+  /* ---------------- mini XML parser (subset yang dipakai file Roblox) ------- */
+  function unescape(s) {
+    return String(s).replace(/&(lt|gt|amp|quot|apos|#x[0-9a-fA-F]+|#[0-9]+);/g, function (_, g) {
+      if (g === "lt") return "<";
+      if (g === "gt") return ">";
+      if (g === "amp") return "&";
+      if (g === "quot") return '"';
+      if (g === "apos") return "'";
+      return String.fromCodePoint(g.charAt(1) === "x" ? parseInt(g.slice(2), 16) : parseInt(g.slice(1), 10));
+    });
+  }
+
+  function parseXML(src) {
+    if (typeof src !== "string") throw new Error("Input bukan teks XML");
+    var src2 = src.replace(/^\uFEFF/, "");
+    var i = 0, n = src2.length, stack = [], root = null;
+
+    while (i < n) {
+      var lt = src2.indexOf("<", i);
+      if (lt < 0) break;
+      if (lt > i && stack.length) stack[stack.length - 1].parts.push({ v: src2.slice(i, lt), raw: false });
+
+      if (src2.startsWith("<!--", lt)) {
+        var ec = src2.indexOf("-->", lt); if (ec < 0) throw new Error("Komentar XML tidak ditutup");
+        i = ec + 3; continue;
+      }
+      if (src2.startsWith("<![CDATA[", lt)) {
+        var ed = src2.indexOf("]]>", lt); if (ed < 0) throw new Error("CDATA tidak ditutup");
+        if (stack.length) stack[stack.length - 1].parts.push({ v: src2.slice(lt + 9, ed), raw: true });
+        i = ed + 3; continue;
+      }
+      if (src2.startsWith("<?", lt)) {
+        var ep = src2.indexOf("?>", lt); if (ep < 0) throw new Error("Deklarasi XML tidak ditutup");
+        i = ep + 2; continue;
+      }
+      if (src2.startsWith("<!", lt)) {
+        var eb = src2.indexOf(">", lt); if (eb < 0) throw new Error("Deklarasi XML rusak");
+        i = eb + 1; continue;
+      }
+
+      var gt = src2.indexOf(">", lt);
+      if (gt < 0) throw new Error("Tag XML tidak ditutup");
+      var inner = src2.slice(lt + 1, gt);
+      var selfClose = /\/\s*$/.test(inner);
+      if (selfClose) inner = inner.replace(/\/\s*$/, "");
+
+      if (inner.charAt(0) === "/") {
+        var closeName = inner.slice(1).trim();
+        var top = stack.pop();
+        if (!top) throw new Error("Tag penutup tak terduga: </" + closeName + ">");
+        if (top.name !== closeName) throw new Error("Tag tidak cocok: <" + top.name + "> ditutup dengan </" + closeName + ">");
+        i = gt + 1; continue;
+      }
+
+      var nm = /^([^\s\/>]+)/.exec(inner);
+      if (!nm) throw new Error("Nama tag XML tidak valid");
+      var node = { name: nm[1], attrs: {}, children: [], text: "", parts: [] };
+      var rest = inner.slice(nm[1].length);
+      var am, are = /([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+      while ((am = are.exec(rest))) node.attrs[am[1]] = unescape(am[2] !== undefined ? am[2] : am[3]);
+
+      if (stack.length) stack[stack.length - 1].children.push(node);
+      else if (!root) root = node;
+      if (!selfClose) stack.push(node);
+      i = gt + 1;
+    }
+    if (!root) throw new Error("Tidak ada elemen root di XML ini");
+
+    /* gabungkan potongan teks: konten CDATA tetap apa adanya, teks biasa di-unescape */
+    (function finish(node) {
+      node.text = node.parts.map(function (seg) { return seg.raw ? seg.v : unescape(seg.v); }).join("");
+      delete node.parts;
+      for (var i2 = 0; i2 < node.children.length; i2++) finish(node.children[i2]);
+    })(root);
+    return root;
+  }
+
+  /* ---------------- matematika vektor & quaternion (x,y,z[,w]) ------------- */
+  function num(v, d) { var f = parseFloat(v); return isFinite(f) ? f : (d || 0); }
+  function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+  function scale(a, k) { return [a[0] * k, a[1] * k, a[2] * k]; }
+  function qNorm(q) {
+    var l = Math.hypot(q[0], q[1], q[2], q[3]);
+    if (!l) return [0, 0, 0, 1];
+    return [q[0] / l, q[1] / l, q[2] / l, q[3] / l];
+  }
+  function qMul(a, b) {
+    return [
+      a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+      a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+      a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+      a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]
+    ];
+  }
+  function qAxis(axis, rad) {
+    var l = Math.hypot(axis[0], axis[1], axis[2]) || 1;
+    var s = Math.sin(rad / 2);
+    return [axis[0] / l * s, axis[1] / l * s, axis[2] / l * s, Math.cos(rad / 2)];
+  }
+  function qDeg(x, y, z) { return qMul(qMul(qAxis([1, 0, 0], x * DEG), qAxis([0, 1, 0], y * DEG)), qAxis([0, 0, 1], z * DEG)); }
+  function qRotate(q, v) {
+    var x = q[0], y = q[1], z = q[2], w = q[3];
+    var tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+    return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)];
+  }
+  function qSlerp(a, b, t) {
+    var d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    var bb = b;
+    if (d < 0) { bb = [-b[0], -b[1], -b[2], -b[3]]; d = -d; }
+    if (d > 0.9995) return qNorm([a[0] + (bb[0] - a[0]) * t, a[1] + (bb[1] - a[1]) * t, a[2] + (bb[2] - a[2]) * t, a[3] + (bb[3] - a[3]) * t]);
+    var th = Math.acos(Math.max(-1, Math.min(1, d)));
+    var s = Math.sin(th), wa = Math.sin((1 - t) * th) / s, wb = Math.sin(t * th) / s;
+    return [a[0] * wa + bb[0] * wb, a[1] * wa + bb[1] * wb, a[2] * wa + bb[2] * wb, a[3] * wa + bb[3] * wb];
+  }
+  function matToQuat(m) {
+    var t = m[0] + m[4] + m[8], q, s;
+    if (t > 0) { s = Math.sqrt(t + 1) * 2; q = [(m[7] - m[5]) / s, (m[2] - m[6]) / s, (m[3] - m[1]) / s, 0.25 * s]; }
+    else if (m[0] > m[4] && m[0] > m[8]) { s = Math.sqrt(1 + m[0] - m[4] - m[8]) * 2; q = [0.25 * s, (m[1] + m[3]) / s, (m[2] + m[6]) / s, (m[7] - m[5]) / s]; }
+    else if (m[4] > m[8]) { s = Math.sqrt(1 + m[4] - m[0] - m[8]) * 2; q = [(m[1] + m[3]) / s, 0.25 * s, (m[5] + m[7]) / s, (m[2] - m[6]) / s]; }
+    else { s = Math.sqrt(1 + m[8] - m[0] - m[4]) * 2; q = [(m[2] + m[6]) / s, (m[5] + m[7]) / s, 0.25 * s, (m[3] - m[1]) / s]; }
+    return qNorm(q);
+  }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function lerpV(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
+
+  /* ---------------- daftar joint: rig Roblox standar ---------------------- */
+  var R15_SPEC = [
+    ["HumanoidRootPart", null, [0, 0, 0]],
+    ["LowerTorso", "HumanoidRootPart", [0, -0.15, 0]],
+    ["UpperTorso", "LowerTorso", [0, 0.25, 0]],
+    ["Head", "UpperTorso", [0, 0.5, 0]],
+    ["LeftUpperArm", "UpperTorso", [0.52, 0.32, 0]],
+    ["LeftLowerArm", "LeftUpperArm", [0, -0.36, 0]],
+    ["LeftHand", "LeftLowerArm", [0, -0.3, 0]],
+    ["RightUpperArm", "UpperTorso", [-0.52, 0.32, 0]],
+    ["RightLowerArm", "RightUpperArm", [0, -0.36, 0]],
+    ["RightHand", "RightLowerArm", [0, -0.3, 0]],
+    ["LeftUpperLeg", "LowerTorso", [0.2, -0.3, 0]],
+    ["LeftLowerLeg", "LeftUpperLeg", [0, -0.46, 0]],
+    ["LeftFoot", "LeftLowerLeg", [0, -0.44, 0]],
+    ["RightUpperLeg", "LowerTorso", [-0.2, -0.3, 0]],
+    ["RightLowerLeg", "RightUpperLeg", [0, -0.46, 0]],
+    ["RightFoot", "RightLowerLeg", [0, -0.44, 0]]
+  ];
+
+  /* Topologi rig standar Roblox. Dipakai kalau file animation menyimpan pose
+     secara datar (tanpa nesting), supaya rantai parent tetap bisa direkonstruksi. */
+  var R15_PARENTS = {
+    LowerTorso: "HumanoidRootPart", UpperTorso: "LowerTorso", Head: "UpperTorso",
+    LeftUpperArm: "UpperTorso", LeftLowerArm: "LeftUpperArm", LeftHand: "LeftLowerArm",
+    RightUpperArm: "UpperTorso", RightLowerArm: "RightUpperArm", RightHand: "RightLowerArm",
+    LeftUpperLeg: "LowerTorso", LeftLowerLeg: "LeftUpperLeg", LeftFoot: "LeftLowerLeg",
+    RightUpperLeg: "LowerTorso", RightLowerLeg: "RightUpperLeg", RightFoot: "RightLowerLeg"
+  };
+  var R6_PARENTS = {
+    Torso: "HumanoidRootPart", Head: "Torso", "Left Arm": "Torso", "Right Arm": "Torso",
+    "Left Leg": "Torso", "Right Leg": "Torso", Neck: "Torso", RootJoint: "HumanoidRootPart",
+    "Left Arm ": "Torso", "Right Arm ": "Torso", "Left Leg ": "Torso", "Right Leg ": "Torso"
+  };
+  var NAME_PARENTS = (function () {
+    var all = {};
+    Object.keys(R6_PARENTS).forEach(function (k) { all[k] = R6_PARENTS[k]; });
+    Object.keys(R15_PARENTS).forEach(function (k) { all[k] = R15_PARENTS[k]; });
+    return all;
+  })();
+
+  /* Pilih topologi mana yang paling cocok dengan nama joint di file:
+     hitung berapa nama yang parent-nya benar-benar ada, ambil skor tertinggi. */
+  function pickTopology(names, seen) {
+    function score(map) {
+      var s = 0;
+      for (var i = 0; i < names.length; i++) {
+        var par = map[names[i]];
+        if (par && seen[par]) s++;
+      }
+      return s;
+    }
+    var s15 = score(R15_PARENTS), s6 = score(R6_PARENTS);
+    return s6 > s15 ? R6_PARENTS : R15_PARENTS;
+  }
+
+  /* Cari leluhur terdekat yang benar-benar ada di file (maks 8 langkah). */
+  function resolveParent(name, map, seen) {
+    var cur = name, hops = 0;
+    while (hops++ < 8) {
+      cur = map[cur];
+      if (!cur) return null;
+      if (seen[cur]) return cur;
+    }
+    return null;
+  }
+
+  /* ---------------- parse item Roblox ------------------------------------- */
+  function isItem(node, cls) { return node.name === "Item" && (!cls || node.attrs["class"] === cls); }
+
+  function readProps(propsNode) {
+    var out = {};
+    for (var i = 0; i < propsNode.children.length; i++) {
+      var p = propsNode.children[i];
+      var name = p.attrs["name"] || p.attrs["Name"] || p.name || "";
+      if (!name) continue;
+      /* toleran terhadap variasi penulisan: <CoordinateFrame>, <Vector3>,
+         maupun <EulerRotation> dengan anak X/Y/Z. */
+      var kids = [], j, k;
+      for (j = 0; j < p.children.length; j++) kids.push(p.children[j].name);
+      var hasXYZ = kids.indexOf("X") >= 0 && kids.indexOf("Y") >= 0;
+      var hasRot = kids.indexOf("R00") >= 0;
+
+      if (p.name === "CoordinateFrame" || (hasRot && hasXYZ)) {
+        var cf = {};
+        for (j = 0; j < p.children.length; j++) cf[p.children[j].name] = num(p.children[j].text, 0);
+        out[name] = { kind: "cframe", value: cf };
+      } else if (p.name === "Vector3" || p.name === "EulerRotation" || hasXYZ) {
+        var v3 = {};
+        for (k = 0; k < p.children.length; k++) v3[p.children[k].name] = num(p.children[k].text, 0);
+        out[name] = { kind: "vector3", value: v3 };
+      } else {
+        var raw = (p.text || "").trim();
+        out[name] = { kind: p.name, value: p.name === "bool" ? raw === "true" : raw };
+      }
+    }
+    return out;
+  }
+
+  function parseItem(node) {
+    var it = { cls: node.attrs["class"] || "", props: {}, children: [] };
+    for (var i = 0; i < node.children.length; i++) {
+      var c = node.children[i];
+      if (c.name === "Item") it.children.push(parseItem(c));
+      else if (c.name === "Properties") it.props = readProps(c);
+    }
+    return it;
+  }
+
+  function findItemByClass(node, cls) {
+    if (isItem(node, cls)) return parseItem(node);
+    for (var i = 0; i < node.children.length; i++) {
+      var found = findItemByClass(node.children[i], cls);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function poseLocal(props) {
+    var cf = props["CFrame"];
+    if (cf && cf.kind === "cframe") {
+      var v = cf.value;
+      var m = [num(v.R00, 1), num(v.R01, 0), num(v.R02, 0), num(v.R10, 0), num(v.R11, 1), num(v.R12, 0), num(v.R20, 0), num(v.R21, 0), num(v.R22, 1)];
+      return { p: [num(v.X, 0), num(v.Y, 0), num(v.Z, 0)], q: matToQuat(m) };
+    }
+    var er = props["EulerRotation"];
+    if (er && er.kind === "vector3") {
+      return { p: [0, 0, 0], q: qDeg(num(er.value.X, 0), num(er.value.Y, 0), num(er.value.Z, 0)) };
+    }
+    var pos = props["Position"];
+    if (pos && pos.kind === "vector3") return { p: [num(pos.value.X, 0), num(pos.value.Y, 0), num(pos.value.Z, 0)], q: [0, 0, 0, 1] };
+    return { p: [0, 0, 0], q: [0, 0, 0, 1] };
+  }
+
+  /* ---------------- KeyframeSequence (.rbxmx) → struktur animasi ---------- */
+  function buildFromItem(seqItem, meta) {
+    var name = seqItem.props["Name"] ? String(seqItem.props["Name"].value) : "Animation";
+    var loopProp = seqItem.props["Loop"];
+    var loop = loopProp ? loopProp.value === true : true;
+    var prioProp = seqItem.props["Priority"];
+    var priority = prioProp ? String(prioProp.value) : "0";
+
+    var kfItems = [];
+    (function walk(items) {
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].cls === "Keyframe") kfItems.push(items[i]);
+        else if (items[i].children && items[i].children.length) walk(items[i].children);
+      }
+    })(seqItem.children);
+
+    var order = [], parentOf = {}, seen = {};
+    var keys = [], duration = 0;
+
+    for (var k = 0; k < kfItems.length; k++) {
+      var kf = kfItems[k];
+      var t = 0;
+      if (kf.props["Time"]) t = num(kf.props["Time"].value, 0);
+      else if (kf.props["time"]) t = num(kf.props["time"].value, 0);
+      if (t > duration) duration = t;
+
+      var locals = {};
+      (function walkPoses(items, parentName) {
+        for (var i = 0; i < items.length; i++) {
+          var it = items[i];
+          if (it.cls !== "Pose") continue;
+          var nm = it.props["Name"] ? String(it.props["Name"].value) : "";
+          if (!nm) continue;
+          if (!seen[nm]) { seen[nm] = 1; order.push(nm); parentOf[nm] = parentName; }
+          locals[nm] = poseLocal(it.props);
+          if (it.children && it.children.length) walkPoses(it.children, nm);
+        }
+      })(kf.children, null);
+
+      keys.push({ t: t, locals: locals });
+    }
+
+    keys.sort(function (a, b) { return a.t - b.t; });
+
+    /* parent untuk pose datar (tanpa nesting) → pakai topologi rig standar */
+    var topo = pickTopology(order, seen);
+    for (var o = 0; o < order.length; o++) {
+      var nm2 = order[o];
+      if (parentOf[nm2]) continue;
+      if (nm2 === "HumanoidRootPart") { parentOf[nm2] = null; continue; }
+      parentOf[nm2] = resolveParent(nm2, topo, seen);
+    }
+
+    /* urutkan joint supaya parent selalu di depan anak */
+    var depth = {}, jointsOrdered = [];
+    function depthOf(nm3, guard) {
+      if (depth[nm3] !== undefined) return depth[nm3];
+      var par = parentOf[nm3];
+      depth[nm3] = (!par || !seen[par] || guard > 32) ? 0 : depthOf(par, (guard || 0) + 1) + 1;
+      return depth[nm3];
+    }
+    for (var o2 = 0; o2 < order.length; o2++) depthOf(order[o2], 0);
+    order.slice().sort(function (a, b) { return depth[a] - depth[b]; }).forEach(function (nm4) { jointsOrdered.push(nm4); });
+
+    var joints = jointsOrdered.map(function (nm5) {
+      var par = parentOf[nm5];
+      return { name: nm5, parent: par && seen[par] ? jointsOrdered.indexOf(par) : -1 };
+    });
+
+    /* selaraskan locals ke urutan joint, isi yang kosong dari keyframe sebelumnya */
+    var prev = joints.map(function (j) {
+      for (var k2 = 0; k2 < keys.length; k2++) if (keys[k2].locals[j.name]) return keys[k2].locals[j.name];
+      return { p: [0, 0, 0], q: [0, 0, 0, 1] };
+    });
+    var aligned = keys.map(function (key) {
+      var arr = joints.map(function (j, idx) {
+        var got = key.locals[j.name];
+        if (got) prev[idx] = got;
+        return prev[idx];
+      });
+      return { t: key.t, locals: arr };
+    });
+
+    var bounds = computeBounds({ joints: joints, keys: aligned, duration: duration || 0 });
+    return {
+      name: name, loop: loop, priority: priority, duration: duration,
+      joints: joints, keys: aligned, bones: boneList(joints),
+      bounds: bounds, source: (meta && meta.source) || "file",
+      kind: joints.some(function (j) { return j.name === "UpperTorso"; }) ? "R15" : "R6/native"
+    };
+  }
+
+  function boneList(joints) {
+    var out = [];
+    for (var i = 0; i < joints.length; i++) if (joints[i].parent >= 0) out.push([joints[i].parent, i]);
+    return out;
+  }
+
+  function parseKeyframeSequence(text, meta) {
+    var root = parseXML(text);
+    var item = findItemByClass(root, "KeyframeSequence");
+    if (!item) throw new Error("Tidak ada Item class=\"KeyframeSequence\" di file ini. Ekspor animasi dari Roblox Studio sebagai .rbxmx.");
+    var seq = buildFromItem(item, meta);
+    if (!seq.keys.length) throw new Error("KeyframeSequence ini tidak punya Keyframe sama sekali.");
+    return seq;
+  }
+
+  /* ---------------- sampling ---------------------------------------------- */
+  function sampleLocals(seq, t) {
+    var keys = seq.keys;
+    if (!keys.length) return [];
+    if (t <= keys[0].t) return keys[0].locals;
+    var lastK = keys[keys.length - 1];
+    if (t >= lastK.t) return lastK.locals;
+
+    var lo = 0, hi = keys.length - 1;
+    while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (keys[mid].t <= t) lo = mid; else hi = mid; }
+    var a = keys[lo], b = keys[hi];
+    var span = b.t - a.t;
+    var al = span > 1e-6 ? (t - a.t) / span : 0;
+    var out = new Array(seq.joints.length);
+    for (var i = 0; i < seq.joints.length; i++) {
+      out[i] = { p: lerpV(a.locals[i].p, b.locals[i].p, al), q: qSlerp(a.locals[i].q, b.locals[i].q, al) };
+    }
+    return out;
+  }
+
+  function worldTransforms(seq, t) {
+    var locals = sampleLocals(seq, t), out = new Array(seq.joints.length);
+    for (var i = 0; i < seq.joints.length; i++) {
+      var j = seq.joints[i], lp = locals[i] || { p: [0, 0, 0], q: [0, 0, 0, 1] };
+      if (j.parent < 0) {
+        out[i] = { p: lp.p.slice(), q: lp.q.slice() };
+      } else {
+        var par = out[j.parent];
+        out[i] = { p: add(par.p, qRotate(par.q, lp.p)), q: qMul(par.q, lp.q) };
+      }
+    }
+    return out;
+  }
+
+  function computeBounds(seq) {
+    if (!seq.keys || !seq.keys.length) return { center: [0, 0, 0], radius: 3, minY: 0 };
+    var dur = seq.duration || 0;
+    var steps = 32, min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (var s = 0; s <= steps; s++) {
+      var tr = worldTransforms(seq, dur * (s / steps));
+      for (var i = 0; i < tr.length; i++) {
+        var p = tr[i].p;
+        for (var c = 0; c < 3; c++) { if (p[c] < min[c]) min[c] = p[c]; if (p[c] > max[c]) max[c] = p[c]; }
+      }
+    }
+    var center = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+    var radius = Math.max(0.8, Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2);
+    return { center: center, radius: radius, minY: min[1], maxY: max[1] };
+  }
+
+  function seqStats(seq) {
+    return {
+      name: seq.name, source: seq.source, duration: seq.duration,
+      keyCount: seq.keys.length, jointCount: seq.joints.length,
+      boneCount: seq.bones.length, loop: seq.loop, kind: seq.kind,
+      priority: seq.priority
+    };
+  }
+
+  /* ---------------- generator animasi contoh (R15, 30 fps) --------------- */
+  function buildRig(spec) {
+    var joints = spec.map(function (j, i) {
+      var p = i === 0 ? -1 : spec.findIndex(function (s) { return s[0] === j[1]; });
+      return { name: j[0], parent: p, rest: [j[2][0], j[2][1], j[2][2]] };
+    });
+    return { joints: joints, bones: boneList(joints) };
+  }
+
+  var rig15 = buildRig(R15_SPEC);
+
+  function proceduralSample(kind) {
+    kind = kind || "idle";
+    var FPS = 30;
+    var DUR = kind === "walk" ? 1.2 : 2.0;
+    var N = Math.round(DUR * FPS);
+    var joints = rig15.joints.map(function (j) { return { name: j.name, parent: j.parent }; });
+    var keys = [];
+
+    for (var k = 0; k <= N; k++) {
+      var t = k / FPS;
+      var ph = (t / DUR) * Math.PI * 2;
+      var L = {};
+
+      function set(name, offset, quat) {
+        for (var i = 0; i < rig15.joints.length; i++) {
+          if (rig15.joints[i].name !== name) continue;
+          var rest = rig15.joints[i].rest;
+          L[i] = { p: offset ? [rest[0] + offset[0], rest[1] + offset[1], rest[2] + offset[2]] : rest.slice(), q: quat || [0, 0, 0, 1] };
+          return;
+        }
+      }
+      function idx(name) { for (var i = 0; i < rig15.joints.length; i++) if (rig15.joints[i].name === name) return i; return -1; }
+
+      var breath = 0.018 * Math.sin(2 * ph);
+
+      if (kind === "walk") {
+        set("HumanoidRootPart", [0, 0.035 * Math.abs(Math.sin(ph * 2)), 0], null);
+        set("LowerTorso", [0, 0.012 * Math.sin(2 * ph), 0], qDeg(2, 4 * Math.sin(ph), 0));
+        set("UpperTorso", null, qDeg(6 + 2 * Math.sin(2 * ph), 5 * Math.sin(ph), 0));
+        set("Head", null, qDeg(-5 + 2 * Math.sin(2 * ph), 6 * Math.sin(ph + 0.5), 0));
+        set("LeftUpperArm", null, qDeg(-34 * Math.sin(ph), 0, 7));
+        set("LeftLowerArm", null, qDeg(-24 - 10 * Math.sin(ph), 0, 0));
+        set("RightUpperArm", null, qDeg(34 * Math.sin(ph), 0, -7));
+        set("RightLowerArm", null, qDeg(-24 + 10 * Math.sin(ph), 0, 0));
+        set("LeftUpperLeg", null, qDeg(34 * Math.sin(ph), 0, 0));
+        set("LeftLowerLeg", null, qDeg(Math.max(0, 28 + 26 * Math.sin(ph + 1.15)), 0, 0));
+        set("LeftFoot", null, qDeg(-8 * Math.sin(ph), 0, 0));
+        set("RightUpperLeg", null, qDeg(-34 * Math.sin(ph), 0, 0));
+        set("RightLowerLeg", null, qDeg(Math.max(0, 28 - 26 * Math.sin(ph + 1.15)), 0, 0));
+        set("RightFoot", null, qDeg(8 * Math.sin(ph), 0, 0));
+      } else if (kind === "wave") {
+        set("HumanoidRootPart", [0, breath, 0], null);
+        set("LowerTorso", null, qDeg(1.5 * Math.sin(2 * ph), 4 * Math.sin(ph), 0));
+        set("UpperTorso", null, qDeg(3 * Math.sin(2 * ph + 0.3), 5 * Math.sin(ph), 2 * Math.sin(ph)));
+        set("Head", null, qDeg(3 * Math.sin(2 * ph + 0.8), 9 * Math.sin(ph + 0.2), -6));
+        /* lengan kanan diangkat lalu melambai */
+        var raise = qDeg(0, 0, -142);
+        var wobble = qDeg(0, 0, 7 * Math.sin(ph));
+        var down = qMul(raise, wobble);
+        set("RightUpperArm", null, down);
+        set("RightLowerArm", null, qDeg(22 * Math.sin(3 * ph) + 6, 0, 0));
+        set("RightHand", null, qDeg(10 * Math.sin(3 * ph), 0, 0));
+        /* lengan kiri santai */
+        set("LeftUpperArm", null, qDeg(12 * Math.sin(ph), 0, 8));
+        set("LeftLowerArm", null, qDeg(-14 - 7 * Math.sin(ph), 0, 0));
+        set("LeftHand", null, qDeg(-6, 0, 0));
+        set("LeftUpperLeg", null, qDeg(2, 0, 0));
+        set("RightUpperLeg", null, qDeg(-2, 0, 0));
+      } else {
+        /* idle */
+        set("HumanoidRootPart", [0, breath, 0], null);
+        set("LowerTorso", null, qDeg(1.2 * Math.sin(2 * ph), 2.5 * Math.sin(ph), 0));
+        set("UpperTorso", null, qDeg(2.4 * Math.sin(2 * ph + 0.4), 4 * Math.sin(ph), 1.5 * Math.sin(ph)));
+        set("Head", null, qDeg(2.5 * Math.sin(2 * ph + 0.9), 7 * Math.sin(ph * 0.9 + 0.3), 2 * Math.sin(ph * 0.5)));
+        set("LeftUpperArm", null, qDeg(9 * Math.sin(ph + 0.2), 0, 7 + 2 * Math.sin(ph)));
+        set("LeftLowerArm", null, qDeg(-13 - 6 * Math.sin(ph + 0.2), 0, 0));
+        set("RightUpperArm", null, qDeg(9 * Math.sin(ph + Math.PI + 0.2), 0, -7 - 2 * Math.sin(ph)));
+        set("RightLowerArm", null, qDeg(-13 - 6 * Math.sin(ph + Math.PI + 0.2), 0, 0));
+        set("LeftUpperLeg", null, qDeg(1.5 * Math.sin(ph), 0, 0));
+        set("RightUpperLeg", null, qDeg(-1.5 * Math.sin(ph), 0, 0));
+      }
+
+      var arr = new Array(rig15.joints.length);
+      for (var i2 = 0; i2 < rig15.joints.length; i2++) {
+        var jl = rig15.joints[i2];
+        arr[i2] = L[i2] || { p: jl.rest.slice(), q: [0, 0, 0, 1] };
+      }
+      keys.push({ t: t, locals: arr });
+      void idx;
+    }
+
+    var seq = {
+      name: kind === "walk" ? "Demo · Walk Cycle" : kind === "wave" ? "Demo · Wave Hello" : "Demo · Idle Breathe",
+      loop: true, priority: "Core", duration: DUR, fps: FPS,
+      joints: joints, keys: keys, bones: rig15.bones,
+      source: "preset", kind: "R15"
+    };
+    seq.bounds = computeBounds(seq);
+    return seq;
+  }
+
+  return {
+    parseXML: parseXML, parseKeyframeSequence: parseKeyframeSequence,
+    buildRig: buildRig, proceduralSample: proceduralSample,
+    sampleLocals: sampleLocals, worldTransforms: worldTransforms,
+    computeBounds: computeBounds, seqStats: seqStats, boneList: boneList,
+    qMul: qMul, qAxis: qAxis, qDeg: qDeg, qRotate: qRotate, qSlerp: qSlerp, qNorm: qNorm,
+    matToQuat: matToQuat, NAME_PARENTS: NAME_PARENTS, R15_SPEC: R15_SPEC
+  };
+})();
+/* ===== ISM-CORE-END ===== */
+
+/* =========================================================================
+   Renderer + UI playground (butuh DOM/canvas).
+   ========================================================================= */
+(function () {
+  "use strict";
+  var C = ISMCore;
+
+  /* ---------------- renderer ---------------- */
+  function createRenderer(canvas, opts) {
+    opts = opts || {};
+    var ctx = canvas.getContext("2d");
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w = 0, h = 0;
+    var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var cam = { yaw: opts.yaw === undefined ? -0.62 : opts.yaw, pitch: opts.pitch === undefined ? 0.16 : opts.pitch, dist: 6.2, target: [0, -0.25, 0], focal: 700 };
+    var st = { seq: null, t: 0, playing: false, speed: 1, loop: true, autoRotate: !!opts.autoRotate, dragging: false, touched: false };
+    var last = performance.now();
+    var FRAMES = 0, FPS_AT = performance.now(), FPS = 0;
+
+    function resize() {
+      var r = canvas.getBoundingClientRect();
+      w = Math.max(200, Math.round(r.width || canvas.width));
+      h = Math.max(140, Math.round(r.height || (r.width * 0.75)));
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+
+    function project(p) {
+      var x = p[0] - cam.target[0], y = p[1] - cam.target[1], z = p[2] - cam.target[2];
+      var cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+      var x1 = x * cy + z * sy, z1 = -x * sy + z * cy;
+      var cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+      var y1 = y * cp - z1 * sp, z2 = y * sp + z1 * cp;
+      var depth = cam.dist + z2;
+      if (depth < 0.06) depth = 0.06;
+      var s = cam.focal / depth;
+      return { x: w / 2 + x1 * s, y: h / 2 - y1 * s, z: depth, s: s };
+    }
+
+    function fit(seq) {
+      var b = seq.bounds || C.computeBounds(seq);
+      cam.target = [b.center[0], b.center[1], b.center[2]];
+      cam.dist = Math.min(22, Math.max(1.6, b.radius * 2.35));
+      cam.focal = Math.min(w, h) * 1.28;
+      st.groundY = b.minY - 0.03;
+    }
+
+    function drawBg() {
+      var g = ctx.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, "#080d17"); g.addColorStop(0.55, "#070a12"); g.addColorStop(1, "#04060b");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+      var r = ctx.createRadialGradient(w * 0.52, h * 0.44, 0, w * 0.52, h * 0.44, Math.max(w, h) * 0.62);
+      r.addColorStop(0, "rgba(34,211,238,0.11)"); r.addColorStop(0.5, "rgba(168,85,247,0.055)"); r.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = r; ctx.fillRect(0, 0, w, h);
+    }
+
+    function drawGrid() {
+      var gy = st.groundY === undefined ? -1.3 : st.groundY;
+      var ext = 7;
+      ctx.lineWidth = 1;
+      for (var i = -ext; i <= ext; i++) {
+        var a = project([i, gy, -ext]), b = project([i, gy, ext]);
+        if (a.z > 0.06 && b.z > 0.06) {
+          var al = 0.10 * (1 - Math.min(1, Math.abs(i) / (ext + 1)));
+          ctx.strokeStyle = "rgba(120,190,215," + al.toFixed(3) + ")";
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        }
+        var c = project([-ext, gy, i]), d = project([ext, gy, i]);
+        if (c.z > 0.06 && d.z > 0.06) {
+          var al2 = 0.10 * (1 - Math.min(1, Math.abs(i) / (ext + 1)));
+          ctx.strokeStyle = "rgba(120,190,215," + al2.toFixed(3) + ")";
+          ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.stroke();
+        }
+      }
+    }
+
+    function drawShadow(rootTr) {
+      var gy = st.groundY === undefined ? -1.3 : st.groundY;
+      var root = rootTr ? rootTr.p : [0, 0, 0];
+      var pts = [];
+      for (var a = 0; a < 18; a++) {
+        var ang = (a / 18) * Math.PI * 2;
+        pts.push(project([root[0] + Math.cos(ang) * 0.62, gy + 0.01, root[2] + Math.sin(ang) * 0.62]));
+      }
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(0,0,0,0.42)";
+      ctx.filter = "blur(6px)";
+      ctx.fill();
+      ctx.filter = "none";
+    }
+
+    function drawSkeleton(seq, tr) {
+      var pts = tr.map(project);
+      var headIdx = -1, rootIdx = 0;
+      for (var i = 0; i < seq.joints.length; i++) {
+        if (headIdx < 0 && /^head$/i.test(seq.joints[i].name)) headIdx = i;
+        if (seq.joints[i].parent < 0) rootIdx = i;
+      }
+      drawShadow(tr[rootIdx]);
+      drawBones(seq, tr, pts, headIdx);
+    }
+
+    function drawBones(seq, tr, pts, headIdx) {
+      var bones = seq.bones.slice();
+      /* urutan painter: jauh dulu */
+      bones.sort(function (a, b) {
+        var za = (pts[a[0]].z + pts[a[1]].z) / 2, zb = (pts[b[0]].z + pts[b[1]].z) / 2;
+        return zb - za;
+      });
+
+      /* pass glow */
+      ctx.lineCap = "round";
+      for (var pass = 0; pass < 2; pass++) {
+        for (var i = 0; i < bones.length; i++) {
+          var pb = pts[bones[i][0]], cb = pts[bones[i][1]];
+          if (cb.z >= cam.dist * 1.9) continue;
+          var avgS = (pb.s + cb.s) / 2;
+          var lw = Math.max(1.1, 0.05 * avgS);
+          var alpha = Math.max(0.28, Math.min(1, 1.25 - (avgS / (cam.focal / cam.dist)) * 0.35));
+          if (pass === 0) {
+            ctx.strokeStyle = "rgba(34,211,238," + (0.10 * alpha).toFixed(3) + ")";
+            ctx.lineWidth = lw * 3.1;
+          } else {
+            var grad = ctx.createLinearGradient(pb.x, pb.y, cb.x, cb.y);
+            grad.addColorStop(0, "rgba(125,240,255," + (0.95 * alpha).toFixed(3) + ")");
+            grad.addColorStop(1, "rgba(168,120,255," + (0.88 * alpha).toFixed(3) + ")");
+            ctx.strokeStyle = grad;
+            ctx.lineWidth = lw;
+          }
+          ctx.beginPath(); ctx.moveTo(pb.x, pb.y); ctx.lineTo(cb.x, cb.y); ctx.stroke();
+        }
+      }
+
+      /* joint dots */
+      ctx.fillStyle = "rgba(190,250,255,0.9)";
+      for (var j = 0; j < pts.length; j++) {
+        var r = Math.max(1, 0.017 * pts[j].s);
+        ctx.beginPath(); ctx.arc(pts[j].x, pts[j].y, r, 0, Math.PI * 2); ctx.fill();
+      }
+
+      /* kepala + arah hadap (LookVector ada di -Z) */
+      var hi = headIdx >= 0 ? headIdx : -1;
+      if (hi >= 0) {
+        var hpt = pts[hi], hr = 0.152 * hpt.s;
+        ctx.beginPath(); ctx.arc(hpt.x, hpt.y, hr, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(10,16,26,0.85)"; ctx.fill();
+        ctx.strokeStyle = "rgba(140,245,255,0.95)"; ctx.lineWidth = Math.max(1.3, 0.008 * hpt.s); ctx.stroke();
+        var fwd = C.qRotate(tr[hi].q, [0, 0, -1]);
+        var origin = tr[hi].p, tip = [origin[0] + fwd[0] * 0.42, origin[1] + fwd[1] * 0.42, origin[2] + fwd[2] * 0.42];
+        var po = project(origin), pt = project(tip);
+        ctx.strokeStyle = "rgba(52,211,153,0.85)"; ctx.lineWidth = Math.max(1.2, 0.006 * hpt.s);
+        ctx.beginPath(); ctx.moveTo(po.x, po.y); ctx.lineTo(pt.x, pt.y); ctx.stroke();
+      }
+    }
+
+    function drawHud() {
+      ctx.font = "600 11px ui-monospace,SFMono-Regular,Menlo,monospace";
+      ctx.fillStyle = "rgba(139,154,178,0.75)";
+      ctx.textAlign = "left";
+      var label = (st.seq ? st.seq.name : "—") + "  ·  " + st.t.toFixed(2) + "s";
+      if (opts.hud) ctx.fillText(label, 14, h - 14);
+      if (opts.hud && !st.touched) {
+        ctx.textAlign = "right";
+        ctx.fillStyle = "rgba(99,113,138,0.8)";
+        ctx.fillText("drag = orbit · scroll = zoom", w - 14, h - 14);
+      }
+      ctx.textAlign = "left";
+    }
+
+    function frame(now) {
+      var dt = Math.min(0.05, (now - last) / 1000); last = now;
+      FRAMES++;
+      if (now - FPS_AT > 700) { FPS = FRAMES / ((now - FPS_AT) / 1000); FRAMES = 0; FPS_AT = now; if (opts.onFps) opts.onFps(FPS); }
+
+      if (st.playing && st.seq) {
+        st.t += dt * st.speed;
+        if (st.t >= st.seq.duration) {
+          if (st.loop) st.t = st.seq.duration > 0 ? st.t % st.seq.duration : 0;
+          else { st.t = st.seq.duration; st.playing = false; if (opts.onState) opts.onState(); }
+        }
+        if (opts.onTime) opts.onTime(st.t);
+      }
+      if (st.autoRotate && !st.dragging && !reduced) cam.yaw += dt * 0.22;
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawBg();
+      if (!ro && w !== Math.round(canvas.getBoundingClientRect().width)) resize();
+      drawGrid();
+      if (st.seq) {
+        var tr = C.worldTransforms(st.seq, st.t);
+        drawSkeleton(st.seq, tr);
+      }
+      if (opts.hud) drawHud();
+      requestAnimationFrame(frame);
+    }
+
+    /* interaksi kamera */
+    if (opts.interactive) {
+      var drag = null;
+      canvas.addEventListener("pointerdown", function (e) {
+        drag = { x: e.clientX, y: e.clientY }; st.dragging = true; st.touched = true;
+        try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* pointer capture opsional */ }
+        if (opts.onTouch) opts.onTouch();
+      });
+      canvas.addEventListener("pointermove", function (e) {
+        if (!drag) return;
+        api.orbit(e.clientX - drag.x, e.clientY - drag.y);
+        drag = { x: e.clientX, y: e.clientY };
+      });
+      function endDrag(e) { drag = null; st.dragging = false; try { canvas.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ } }
+      canvas.addEventListener("pointerup", endDrag);
+      canvas.addEventListener("pointercancel", endDrag);
+      canvas.addEventListener("wheel", function (e) {
+        e.preventDefault(); api.zoom(e.deltaY); if (opts.onTouch) opts.onTouch();
+      }, { passive: false });
+      canvas.addEventListener("dblclick", function () { resetCam(); });
+    }
+
+    function resetCam() { if (st.seq) fit(st.seq); cam.yaw = opts.yaw === undefined ? -0.62 : opts.yaw; cam.pitch = 0.16; }
+
+    var ro = window.ResizeObserver ? new ResizeObserver(function () { resize(); if (st.seq) fit(st.seq); }) : null;
+    if (ro && opts.observe) ro.observe(canvas);
+    window.addEventListener("resize", function () { resize(); if (st.seq) fit(st.seq); });
+
+    resize();
+    requestAnimationFrame(frame);
+
+    var api = {
+      state: st,
+      load: function (seq) { st.seq = seq; st.t = 0; fit(seq); },
+      play: function () { if (!st.seq) return; if (st.t >= st.seq.duration - 1e-4) st.t = 0; st.playing = true; },
+      pause: function () { st.playing = false; },
+      toggle: function () { if (st.playing) this.pause(); else this.play(); },
+      setTime: function (t) { st.t = Math.max(0, Math.min(st.seq ? st.seq.duration : 0, t)); },
+      resetCam: resetCam,
+      orbit: function (dx, dy) {
+        st.touched = true;
+        cam.yaw -= dx * 0.0085;
+        cam.pitch = Math.max(-1.15, Math.min(1.15, cam.pitch + dy * 0.0065));
+      },
+      zoom: function (delta) {
+        st.touched = true;
+        cam.dist = Math.max(1.4, Math.min(24, cam.dist * (1 + Math.sign(delta) * 0.09)));
+      },
+      project: project,
+      size: function () { return { w: w, h: h }; }
+    };
+    return api;
+  }
+
+  /* ---------------- hero viewer ---------------- */
+  var heroCanvas = document.getElementById("heroCanvas");
+  var heroFps = document.getElementById("heroFpsLabel");
+  if (heroCanvas) {
+    var hero = createRenderer(heroCanvas, {
+      autoRotate: true, yaw: -0.5, pitch: 0.12, observe: true, interactive: false, hud: true,
+      onFps: function (f) { heroFps.textContent = Math.round(f) + " fps · drag untuk orbit"; }
+    });
+    hero.load(C.proceduralSample("wave"));
+    hero.play();
+
+    (function () {
+      var drag = null;
+      heroCanvas.style.cursor = "grab";
+      heroCanvas.style.touchAction = "none";
+      heroCanvas.addEventListener("pointerdown", function (e) {
+        drag = { x: e.clientX, y: e.clientY };
+        hero.state.dragging = true;
+        heroCanvas.style.cursor = "grabbing";
+        try { heroCanvas.setPointerCapture(e.pointerId); } catch (_) { /* noop */ }
+      });
+      heroCanvas.addEventListener("pointermove", function (e) {
+        if (!drag) return;
+        hero.orbit(e.clientX - drag.x, e.clientY - drag.y);
+        drag = { x: e.clientX, y: e.clientY };
+      });
+      function endHeroDrag(e) {
+        drag = null; hero.state.dragging = false; heroCanvas.style.cursor = "grab";
+        try { heroCanvas.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ }
+      }
+      heroCanvas.addEventListener("pointerup", endHeroDrag);
+      heroCanvas.addEventListener("pointercancel", endHeroDrag);
+      heroCanvas.addEventListener("wheel", function (e) { e.preventDefault(); hero.zoom(e.deltaY); }, { passive: false });
+    })();
+  }
+
+  /* ---------------- playground ---------------- */
+  var canvas = document.getElementById("view");
+  if (!canvas) return;
+
+  var els = {
+    drop: document.getElementById("drop"), file: document.getElementById("file"),
+    notice: document.getElementById("notice"), play: document.getElementById("playBtn"),
+    playLabel: document.getElementById("playLabel"), scrub: document.getElementById("scrub"),
+    time: document.getElementById("timeLabel"), loop: document.getElementById("loopBtn"),
+    speed: document.getElementById("speedBtn"), reset: document.getElementById("resetCam"),
+    png: document.getElementById("pngBtn"), hint: document.getElementById("hint"),
+    badge: document.getElementById("modeBadge"),
+    sName: document.getElementById("sName"), sSource: document.getElementById("sSource"),
+    sDur: document.getElementById("sDur"), sKeys: document.getElementById("sKeys"),
+    sJoints: document.getElementById("sJoints"), sLoop: document.getElementById("sLoop"),
+    joints: document.getElementById("jointList"),
+    rawIn: document.getElementById("rawIn"), cleanOut: document.getElementById("cleanOut"),
+    rawCount: document.getElementById("rawCount"), outCount: document.getElementById("outCount"),
+    shortIds: document.getElementById("shortIds")
+  };
+
+  var speeds = [0.25, 0.5, 1, 1.5, 2];
+  var speedIdx = 2;
+
+  var view = createRenderer(canvas, {
+    interactive: true, observe: true, yaw: -0.62, pitch: 0.14,
+    onTime: function (t) {
+      els.scrub.value = String(t);
+      els.time.textContent = t.toFixed(2) + " / " + (view.state.seq ? view.state.seq.duration.toFixed(2) : "0.00") + "s";
+    },
+    onState: function () { syncPlay(); },
+    onTouch: function () { if (els.hint) els.hint.style.opacity = "0"; }
+  });
+
+  function syncPlay() {
+    els.playLabel.textContent = view.state.playing ? "Pause" : "Play";
+    els.play.querySelector("svg").innerHTML = view.state.playing
+      ? '<path d="M8 5h3v14H8zM13 5h3v14h-3z"/>'
+      : '<path d="M8 5v14l11-7z"/>';
+  }
+
+  function notice(kind, msg) {
+    els.notice.className = "notice " + kind;
+    els.notice.textContent = msg;
+  }
+
+  function loadSeq(seq, badgeText) {
+    view.load(seq);
+    view.play();
+    var s = C.seqStats(seq);
+    els.sName.textContent = s.name;
+    els.sSource.textContent = s.source === "preset" ? "preset R15" : s.source;
+    els.sDur.textContent = s.duration.toFixed(2) + "s";
+    els.sKeys.textContent = s.keyCount + (seq.fps ? "  ·  " + seq.fps + "fps" : "");
+    els.sJoints.textContent = s.jointCount + " joint / " + s.boneCount + " bone";
+    els.sLoop.textContent = s.loop ? "true" : "false";
+    els.badge.textContent = badgeText;
+    els.scrub.max = String(seq.duration || 1);
+    els.scrub.value = "0";
+    els.time.textContent = "0.00 / " + (seq.duration || 0).toFixed(2) + "s";
+    els.joints.innerHTML = seq.joints.map(function (j, i) {
+      var par = j.parent >= 0 ? seq.joints[j.parent].name : "root";
+      return '<div><span>' + String(i).padStart(2, "0") + '</span>' + escapeHtml(j.name) + '<span>' + escapeHtml(par) + "</span></div>";
+    }).join("");
+    syncPlay();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function isProbablyBinary(text) {
+    return text.slice(0, 400).indexOf("\u0000") >= 0;
+  }
+
+  function handleFile(file) {
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var text = String(reader.result || "");
+      if (isProbablyBinary(text)) {
+        notice("bad", "File ini terlihat biner (.rbx lama). Buka di Roblox Studio lalu simpan ulang sebagai .rbxmx (XML), baru drop ke sini.");
+        return;
+      }
+      try {
+        var seq = C.parseKeyframeSequence(text, { source: file.name });
+        seq.source = file.name.length > 22 ? file.name.slice(0, 19) + "…" : file.name;
+        loadSeq(seq, (seq.kind || "native") + " · FILE");
+        notice("good", "Berhasil diparse: " + seq.keys.length + " keyframe, " + seq.joints.length + " joint, durasi " + seq.duration.toFixed(2) + "s.");
+      } catch (err) {
+        notice("bad", "Gagal parse: " + (err && err.message ? err.message : String(err)));
+      }
+    };
+    reader.onerror = function () { notice("bad", "File tidak bisa dibaca."); };
+    reader.readAsText(file);
+  }
+
+  /* preset */
+  Array.prototype.forEach.call(document.querySelectorAll(".seg button"), function (b) {
+    b.addEventListener("click", function () {
+      Array.prototype.forEach.call(document.querySelectorAll(".seg button"), function (o) { o.setAttribute("aria-pressed", "false"); });
+      b.setAttribute("aria-pressed", "true");
+      var kind = b.getAttribute("data-preset");
+      loadSeq(C.proceduralSample(kind), "R15 · " + kind.toUpperCase());
+      notice("good", "Preset R15 “" + kind + "” dimuat — 100% dihitung di browser, tanpa file dan tanpa server.");
+    });
+  });
+
+  /* drop zone */
+  els.drop.addEventListener("click", function () { els.file.click(); });
+  els.drop.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); els.file.click(); } });
+  els.file.addEventListener("change", function () { handleFile(els.file.files && els.file.files[0]); });
+  ["dragenter", "dragover"].forEach(function (ev) {
+    els.drop.addEventListener(ev, function (e) { e.preventDefault(); els.drop.classList.add("over"); });
+  });
+  ["dragleave", "drop"].forEach(function (ev) {
+    els.drop.addEventListener(ev, function (e) { e.preventDefault(); els.drop.classList.remove("over"); });
+  });
+  els.drop.addEventListener("drop", function (e) {
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    handleFile(f);
+  });
+
+  /* kontrol */
+  els.play.addEventListener("click", function () { view.toggle(); syncPlay(); });
+  els.scrub.addEventListener("input", function () {
+    view.pause(); view.setTime(parseFloat(els.scrub.value)); syncPlay();
+    els.time.textContent = parseFloat(els.scrub.value).toFixed(2) + " / " + view.state.seq.duration.toFixed(2) + "s";
+  });
+  els.loop.addEventListener("click", function () {
+    view.state.loop = !view.state.loop;
+    els.loop.setAttribute("aria-pressed", String(view.state.loop));
+    els.loop.textContent = "Loop: " + (view.state.loop ? "on" : "off");
+  });
+  els.speed.addEventListener("click", function () {
+    speedIdx = (speedIdx + 1) % speeds.length;
+    view.state.speed = speeds[speedIdx];
+    els.speed.textContent = "Speed: " + speeds[speedIdx] + "×";
+  });
+  els.reset.addEventListener("click", function () { view.resetCam(); });
+  els.png.addEventListener("click", function () {
+    try {
+      canvas.toBlob(function (blob) {
+        if (!blob) return notice("bad", "Canvas tidak bisa diekspor di browser ini.");
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "ism-frame-" + view.state.t.toFixed(2).replace(".", "_") + "s.png";
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+        notice("good", "Frame pada " + view.state.t.toFixed(2) + "s disimpan sebagai PNG.");
+      });
+    } catch (err) { notice("bad", "Gagal ekspor PNG: " + err.message); }
+  });
+
+  /* ---------------- pembersih daftar ID ---------------- */
+  var MIN_LONG = 6;   /* asset ID modern: 7-13 digit; 6 dipakai sebagai batas aman */
+
+  function extractIds(text, includeShort) {
+    var s = String(text), ids = [], seen = {}, m;
+
+    /* pass 1: token yang jelas-jelas asset ID (prefix rbxassetid://, /library/, assetId=, id=) */
+    var blocks = s.split(/[\s,;|]+/);
+    for (var i = 0; i < blocks.length; i++) {
+      var mm = blocks[i].match(/(?:rbxassetid:\/\/|library\/|assetId=|id=)(\d+)/i);
+      if (mm && !seen[mm[1]]) { seen[mm[1]] = 1; ids.push(mm[1]); }
+    }
+
+    /* pass 2: angka telanjang. default minimal 6 digit supaya angka lain
+       (versi, jumlah, koordinat) tidak ikut terbawa. */
+    var re = includeShort ? /\d{4,}/g : new RegExp("\\d{" + MIN_LONG + ",}", "g");
+    while ((m = re.exec(s))) { if (!seen[m[0]]) { seen[m[0]] = 1; ids.push(m[0]); } }
+
+    ids.sort(function (a, b) { return Number(a) - Number(b); });
+    return ids;
+  }
+
+  function runCleaner() {
+    var includeShort = !!(els.shortIds && els.shortIds.checked);
+    var ids = extractIds(els.rawIn.value || "", includeShort);
+    els.cleanOut.value = ids.join("\n");
+    els.rawCount.textContent = els.rawIn.value.trim() ? "input " + els.rawIn.value.length + " karakter" : "";
+    els.outCount.textContent = ids.length ? ids.length + " ID unik · urut menaik" : "belum ada ID";
+  }
+
+  els.rawIn.addEventListener("input", runCleaner);
+  if (els.shortIds) els.shortIds.addEventListener("change", runCleaner);
+  document.getElementById("cleanBtn").addEventListener("click", runCleaner);
+  document.getElementById("rawClear").addEventListener("click", function () { els.rawIn.value = ""; runCleaner(); els.rawIn.focus(); });
+  document.getElementById("sampleBtn").addEventListener("click", function () {
+    els.rawIn.value = [
+      "https://www.roblox.com/library/1234567890/Run-Animation",
+      "rbxassetid://1234567891",
+      "1234567890",
+      "[Type:Sound] 5678901234",
+      "-- catatan bebas boleh dibuang",
+      "assetId=7654321098",
+      "1234567892"
+    ].join("\n");
+    runCleaner();
+  });
+  document.getElementById("copyBtn").addEventListener("click", function () {
+    var txt = els.cleanOut.value;
+    if (!txt) return;
+    var done = function () { els.outCount.textContent = "tersalin ke clipboard ✓"; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(done, function () { els.cleanOut.select(); document.execCommand("copy"); done(); });
+    } else { els.cleanOut.select(); document.execCommand("copy"); done(); }
+  });
+  document.getElementById("dlBtn").addEventListener("click", function () {
+    if (!els.cleanOut.value) return;
+    var blob = new Blob([els.cleanOut.value + "\n"], { type: "text/plain" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = "asset-ids.txt";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+  });
+
+  /* ---------------- start ---------------- */
+  loadSeq(C.proceduralSample("wave"), "R15 · PRESET");
+  notice("good", "Viewer siap. Putar preset di atas atau drop file .rbxmx milikmu — semuanya diproses lokal di browser ini.");
+  runCleaner();
+})();
+</script>
+</body>
+</html>

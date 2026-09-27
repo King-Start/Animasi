@@ -1,0 +1,27 @@
+# dependency
+node_modules/
+.npm/
+.cache/
+
+# rahasia — JANGAN pernah di-commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# output
+dist/
+build/
+coverage/
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# artefak paket (repo ini sendiri sudah jadi paketnya)
+*.zip

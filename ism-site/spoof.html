@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web Spoofer — ISpooferMotion</title>
+<meta name="description" content="Masukkan asset ID, dapatkan ID baru tanpa install aplikasi desktop. Fetch publik + upload lewat Open Cloud Assets API. Tanpa cookie, tanpa ekstensi.">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2305070d'/%3E%3Cpath d='M7 22c5-12 13-14 18-14' stroke='%2322d3ee' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='7' cy='22' r='3.2' fill='%23a855f7'/%3E%3Ccircle cx='25' cy='8' r='3.2' fill='%2322d3ee'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#05070d;--bg-2:#080c15;--panel:rgba(255,255,255,.028);--panel-2:rgba(255,255,255,.05);
+    --line:rgba(255,255,255,.085);--line-2:rgba(255,255,255,.16);
+    --txt:#e8eef8;--mut:#8b9ab2;--mut-2:#63718a;
+    --cyan:#22d3ee;--violet:#a855f7;--green:#34d399;--amber:#fbbf24;--red:#f87171;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --r:14px;--r-sm:9px;--max:1320px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.6 var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background:
+    radial-gradient(800px 460px at 8% -6%,rgba(34,211,238,.12),transparent 62%),
+    radial-gradient(700px 420px at 96% 2%,rgba(168,85,247,.13),transparent 60%)}
+  .wrap{position:relative;z-index:1;max-width:var(--max);margin:0 auto;padding:0 20px}
+  a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline}
+  h1,h2,h3{margin:0;line-height:1.2;letter-spacing:-.02em}
+  h1{font-size:clamp(26px,3.4vw,40px);font-weight:730}
+  h2{font-size:18px;font-weight:660}
+  h3{font-size:14px;font-weight:650;color:#cfe0f5}
+  code,pre,textarea,.mono{font-family:var(--mono)}
+  header.nav{position:sticky;top:0;z-index:20;background:rgba(5,7,13,.8);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;gap:16px;height:60px}
+  .brand{display:flex;align-items:center;gap:10px;color:var(--txt);font-weight:680}
+  .brand:hover{text-decoration:none}
+  .badge{font:600 10.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;padding:4px 7px;border-radius:5px;border:1px solid rgba(34,211,238,.35);background:rgba(34,211,238,.08);color:var(--cyan)}
+  .nav-links{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 16px;border-radius:var(--r-sm);
+    border:1px solid var(--line-2);background:var(--panel-2);color:var(--txt);font:600 14px/1 var(--sans);cursor:pointer;
+    transition:transform .15s,background .2s,border-color .2s;text-decoration:none!important;white-space:nowrap}
+  .btn:hover{transform:translateY(-1px);background:rgba(255,255,255,.08)}
+  .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+  .btn.primary{background:linear-gradient(135deg,var(--cyan),#3b82f6 45%,var(--violet));border-color:transparent;color:#03121a;font-weight:750}
+  .btn.sm{padding:7px 11px;font-size:12.5px;border-radius:7px}
+  .btn.ghost{background:transparent}
+  .btn.danger{border-color:rgba(248,113,113,.4);color:#fecaca}
+  .head{padding:34px 0 22px}
+  .head p{color:var(--mut);margin-top:12px;max-width:80ch}
+  .cols{display:grid;grid-template-columns:minmax(360px,1fr) minmax(420px,1.25fr);gap:16px;align-items:start;padding-bottom:60px}
+  .panel{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:18px}
+  .panel + .panel{margin-top:14px}
+  .step{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .step .n{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font:700 12px/1 var(--mono);color:var(--cyan);border:1px solid var(--line);background:var(--bg-2);flex:none}
+  label.f{display:block;font:600 11.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--mut-2);margin:14px 0 7px}
+  input[type=text],input[type=password],input[type=number],select{width:100%;padding:10px 12px;border-radius:var(--r-sm);border:1px solid var(--line);background:#04060b;color:#dbe7f7;font:13.5px/1.5 var(--mono);outline:none}
+  input:focus,select:focus,textarea:focus{border-color:rgba(34,211,238,.45);box-shadow:0 0 0 3px rgba(34,211,238,.1)}
+  textarea{width:100%;min-height:150px;resize:vertical;padding:12px;border-radius:var(--r-sm);border:1px solid var(--line);background:#04060b;color:#dbe7f7;font-size:13px;line-height:1.65;outline:none}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .hint{font-size:12.4px;color:var(--mut-2);margin-top:8px;line-height:1.6}
+  .chk{display:inline-flex;align-items:center;gap:7px;font-size:12.6px;color:var(--mut);cursor:pointer}
+  .chk input{accent-color:var(--cyan);width:14px;height:14px}
+  .notice{border-radius:var(--r-sm);padding:11px 13px;font-size:13.2px;margin-top:12px;border:1px solid var(--line);background:var(--panel-2);color:var(--mut)}
+  .notice.err{border-color:rgba(248,113,113,.38);background:rgba(248,113,113,.09);color:#fecaca}
+  .notice.ok{border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.08);color:#a7f3d0}
+  .notice.warn{border-color:rgba(251,191,36,.28);background:rgba(251,191,36,.06);color:#fde68a}
+  .notice b{color:#fff}
+  .progress{height:7px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden;margin:12px 0 6px}
+  .progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--violet));transition:width .35s}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;margin-top:12px}
+  .stats div{background:var(--bg-2);padding:10px 12px}
+  .stats .k{font:600 10px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--mut-2)}
+  .stats .v{font:650 15px/1.3 var(--mono);margin-top:5px}
+  .tblwrap{margin-top:12px;border:1px solid var(--line);border-radius:var(--r-sm);overflow:auto;max-height:330px;background:#04060b}
+  table{width:100%;border-collapse:collapse;font:12.4px/1.5 var(--mono)}
+  th{position:sticky;top:0;background:#070b13;text-align:left;padding:9px 11px;color:var(--mut-2);font-weight:600;font-size:10.6px;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--line);white-space:nowrap}
+  td{padding:8px 11px;border-bottom:1px solid rgba(255,255,255,.045);white-space:nowrap}
+  tr:last-child td{border-bottom:0}
+  .st{padding:2px 7px;border-radius:5px;font-size:11px;border:1px solid var(--line);color:var(--mut)}
+  .st.pending{color:var(--mut-2)}
+  .st.fetching{color:#cff9ff;border-color:rgba(34,211,238,.3);background:rgba(34,211,238,.08)}
+  .st.uploading{color:#e9d5ff;border-color:rgba(168,85,247,.3);background:rgba(168,85,247,.09)}
+  .st.processing{color:#fde68a;border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.08)}
+  .st.done{color:#a7f3d0;border-color:rgba(52,211,153,.32);background:rgba(52,211,153,.09)}
+  .st.error{color:#fecaca;border-color:rgba(248,113,113,.35);background:rgba(248,113,113,.09)}
+  .st.skipped{color:var(--mut-2)}
+  .log{background:#04060b;border:1px solid var(--line);border-radius:var(--r-sm);padding:11px 12px;max-height:190px;overflow:auto;font:11.8px/1.75 var(--mono);color:#93a7c0;margin-top:12px}
+  .log .t{color:var(--mut-2)}
+  .log .warn{color:#fde68a}
+  .log .err{color:#fecaca}
+  .log .ok{color:#a7f3d0}
+  .out{margin-top:12px}
+  .seg{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}
+  .seg button{padding:6px 11px;border-radius:7px;border:1px solid var(--line);background:var(--panel-2);color:var(--mut);font:600 12px/1 var(--sans);cursor:pointer}
+  .seg button[aria-pressed=true]{color:#03121a;background:linear-gradient(135deg,var(--cyan),#60a5fa);border-color:transparent}
+  .drop{border:1.5px dashed var(--line-2);border-radius:var(--r);padding:20px;text-align:center;cursor:pointer;transition:.2s}
+  .drop:hover,.drop.over{border-color:var(--cyan);background:rgba(34,211,238,.05)}
+  .drop strong{display:block;font-size:14px;margin-bottom:4px}
+  .drop span{font-size:12.4px;color:var(--mut)}
+  .tabs{display:flex;gap:8px;margin-bottom:14px}
+  .tabs button{flex:1;padding:9px 12px;border-radius:9px;border:1px solid var(--line);background:var(--panel-2);color:var(--mut);font:650 13px/1 var(--sans);cursor:pointer}
+  .tabs button[aria-pressed=true]{color:#03121a;background:linear-gradient(135deg,var(--cyan),#60a5fa);border-color:transparent}
+  .foot{border-top:1px solid var(--line);padding:22px 0 40px;color:var(--mut-2);font-size:12.8px}
+  .foot a{color:var(--mut)}
+  .hide{display:none!important}
+  @media(max-width:1000px){.cols{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="index.html">
+      <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="8" fill="rgba(34,211,238,.08)" stroke="rgba(34,211,238,.35)"/>
+        <path d="M7.5 22.5C12 11 20 8.5 25 8.5" stroke="#22d3ee" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+        <circle cx="7.5" cy="22.5" r="3" fill="#a855f7"/><circle cx="25" cy="8.5" r="3" fill="#22d3ee"/>
+      </svg>
+      ISpooferMotion
+    </a>
+    <span class="badge">web spoofer</span>
+    <div class="nav-links">
+      <span class="mono" id="healthTag" style="font-size:11.5px;color:var(--mut-2)">memeriksa server…</span>
+      <a class="btn sm ghost" href="index.html">← Docs</a>
+      <button class="btn sm ghost hide" id="logoutBtn" type="button">Logout</button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap head">
+  <h1>Masukkan asset ID, keluar ID baru.</h1>
+  <p>
+    Tanpa install aplikasi. Server mengambil isi asetnya lewat endpoint publik Roblox, lalu meng-upload balik ke akun atau grup
+    milikmu melalui <b>Open Cloud Assets API</b> resmi — jadi kamu dapat ID baru yang kamu miliki. Hasilnya bisa langsung ditempel
+    ke tombol <b>Replace Ids</b> di plugin Studio.
+  </p>
+  <div class="notice warn">
+    <b>Tidak ada kolom cookie di halaman ini, dan itu disengaja.</b> Halaman web tidak boleh meminta sesi akun Roblox-mu.
+    Kredensial yang dipakai di sini cuma <b>Open Cloud API key</b> (bisa dibatasi scope &amp; dicabut kapan saja) atau login OAuth resmi.
+  </div>
+  <div class="notice err hide" id="serverDown">
+    <b>Server belum jalan.</b> Halaman ini butuh backend-nya karena upload tidak bisa dilakukan dari browser.
+    Jalankan di komputermu:
+    <div class="mono" style="margin-top:8px;color:#fecaca">node ism-web/server.mjs</div>
+    lalu buka <span class="mono">http://localhost:8787/spoof.html</span>. (Upload memang tidak mungkin dilakukan murni dari
+    browser: endpoint Roblox kena CORS, dan cookie akun tidak boleh masuk ke web.)
+  </div>
+</div>
+
+<div class="wrap cols">
+  <!-- ======================= KIRI: FORM ======================= -->
+  <div>
+    <div class="panel">
+      <div class="tabs" role="group" aria-label="Sumber aset">
+        <button type="button" id="tabId" aria-pressed="true">Dari asset ID</button>
+        <button type="button" id="tabFile" aria-pressed="false">Dari file lokal</button>
+      </div>
+
+      <section id="paneId">
+        <div class="step"><span class="n">1</span><h2>Tempel daftar asset ID</h2></div>
+        <textarea id="input" spellcheck="false" placeholder="--[[ TYPE: ANIMATION ]]
+[1234567890] [Run Animation] [User:2],
+[1234567891] [Idle] [Group:33445566],
+rbxassetid://1234567892
+https://www.roblox.com/library/1234567893/apa-pun
+1234567894"></textarea>
+        <div class="row">
+          <button class="btn sm ghost" id="sampleBtn" type="button">Isi contoh</button>
+          <button class="btn sm ghost" id="clearBtn" type="button">Kosongkan</button>
+          <span class="mono" id="inputCount" style="font-size:12.3px;color:var(--mut)"></span>
+        </div>
+        <p class="hint">
+          Format keluaran plugin <b>Get Ids</b> langsung bisa ditempel (baris <span class="mono">[id] [nama] [Group:x],</span>),
+          begitu juga URL library, <span class="mono">rbxassetid://</span>, atau ID mentah satu per baris. Duplikat dibuang,
+          dan baris <span class="mono">id = id</span> otomatis memakai sisi kiri.<br>
+          <b>Catatan dari uji nyata:</b> dari 15 animasi populer yang saya coba, 9 bisa ditarik tanpa login dan 6 dijawab
+          <span class="mono">Authentication required</span>. Yang ditolak itu bukan bug — asetnya memang dibatasi Roblox/kreatornya,
+          dan untuk kasus itu pakai tab <b>Dari file lokal</b>.
+        </p>
+      </section>
+
+      <section id="paneFile" class="hide">
+        <div class="step"><span class="n">1</span><h2>Pilih file</h2></div>
+        <div class="drop" id="drop" tabindex="0" role="button">
+          <strong>Drop file di sini</strong>
+          <span>atau klik untuk memilih · <span class="mono">.rbxm .rbxmx</span> (Animation) · <span class="mono">.ogg .mp3 .wav .flac</span> (Sound) · <span class="mono">.png .jpg</span> (Decal) · <span class="mono">.mp4 .mov</span> (Video)</span>
+          <input type="file" id="file" hidden>
+        </div>
+        <div class="row" id="fileInfo"></div>
+        <p class="hint">
+          Mode ini berguna untuk tipe aset yang isinya tidak bisa diambil tanpa login (mis. <b>Sound</b>) — kamu sediakan
+          filenya, server hanya mengurus upload-nya.
+        </p>
+      </section>
+
+      <div class="step" style="margin-top:20px"><span class="n">2</span><h2>Tujuan upload</h2></div>
+      <div class="two">
+        <div>
+          <label class="f" for="userId">User ID (akunmu)</label>
+          <input id="userId" type="text" inputmode="numeric" placeholder="mis. 1234567">
+          <p class="hint">Boleh kosong kalau pakai Group ID. Ambil User ID dari halaman profil Roblox-mu.</p>
+        </div>
+        <div>
+          <label class="f" for="groupId">Group ID (opsional)</label>
+          <input id="groupId" type="text" inputmode="numeric" placeholder="mis. 33445566">
+          <p class="hint">Aset akan diupload atas nama grup. Kamu harus punya izin upload di grup itu.</p>
+        </div>
+      </div>
+      <label class="f" for="namePrefix">Awalan nama aset</label>
+      <input id="namePrefix" type="text" placeholder="ISM Spoof">
+      <label class="f" for="placeId">Place ID (opsional)</label>
+      <input id="placeId" type="text" inputmode="numeric" placeholder="mis. 4483381587">
+      <p class="hint">
+        Sebagian aset hanya bisa diambil dalam konteks sebuah place (mis. aset yang dipakai di game tertentu).
+        Isi Place ID kalau ID-mu gagal diambil tanpa konteks itu.
+      </p>
+    </div>
+
+    <div class="panel">
+      <div class="step"><span class="n">3</span><h2>Kredensial upload</h2></div>
+
+      <div id="authServerKey" class="notice ok hide">
+        Server ini sudah memegang Open Cloud API key sendiri (env <span class="mono">ROBLOX_API_KEY</span>). Kamu tidak perlu mengisi apa pun.
+      </div>
+
+      <div id="authOauth" class="hide">
+        <button class="btn primary" id="loginBtn" type="button" style="width:100%">Login dengan Roblox (OAuth 2.0)</button>
+        <p class="hint">
+          Scope yang diminta cuma <span class="mono">asset:read</span> + <span class="mono">asset:write</span>.
+          Kamu tidak memberi password, dan tidak ada cookie yang berpindah tangan.
+        </p>
+      </div>
+
+      <div id="authKey">
+        <label class="f" for="apiKey">Open Cloud API key</label>
+        <input id="apiKey" type="password" autocomplete="off" placeholder="kunci API kamu">
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="rememberKey"> ingat selama server hidup (di memori saja)</label>
+        </div>
+        <p class="hint">
+          Buat di <b>create.roblox.com → Credentials → API Keys</b> → tambahkan API <b>Assets</b> dengan operasi
+          <span class="mono">Read</span> + <span class="mono">Write</span>, dan set <span class="mono">creator</span> ke User ID atau Group ID di atas.
+          Kunci ini <b>tidak pernah</b> ditulis ke disk dan tidak masuk log.
+        </p>
+        <div class="notice" id="gateBox" style="display:none">
+          Server ini butuh password akses.
+          <div class="row"><input id="gatePw" type="password" placeholder="password akses" style="max-width:220px">
+          <button class="btn sm" id="gateBtn" type="button">Masuk</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="step"><span class="n">4</span><h2>Jalankan</h2></div>
+      <div class="row">
+        <button class="btn primary" id="runBtn" type="button" disabled>Jalankan Spoofer</button>
+        <button class="btn" id="probeBtn" type="button" disabled>Uji ambil saja (tanpa upload)</button>
+        <button class="btn danger hide" id="cancelBtn" type="button">Batalkan</button>
+      </div>
+      <p class="hint" id="runHint">Isi daftar ID dan tujuan upload dulu.</p>
+      <p class="hint">
+        <b>Belum punya API key?</b> Tekan <b>Uji ambil saja</b> — tahap ini tidak butuh kredensial apa pun.
+        Kamu akan lihat ID mana yang isinya bisa ditarik (beserta ukuran + hash), dan mana yang butuh file lokal.
+      </p>
+    </div>
+  </div>
+
+  <!-- ======================= KANAN: HASIL ======================= -->
+  <div>
+    <div class="panel">
+      <div class="row" style="margin:0 0 4px">
+        <h2 style="flex:1">Progres</h2>
+        <span class="mono" id="jobState" style="font-size:12px;color:var(--mut-2)">—</span>
+      </div>
+      <div class="progress"><i id="bar"></i></div>
+      <div class="stats">
+        <div><div class="k">Total</div><div class="v" id="sTotal">0</div></div>
+        <div><div class="k">Selesai</div><div class="v" id="sDone" style="color:var(--green)">0</div></div>
+        <div><div class="k">Gagal</div><div class="v" id="sErr" style="color:var(--red)">0</div></div>
+        <div><div class="k">Sisa</div><div class="v" id="sLeft">0</div></div>
+      </div>
+      <div class="tblwrap">
+        <table>
+          <thead><tr><th>ID lama</th><th>Status</th><th>ID baru</th><th>Ukuran</th><th>ms</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="5" style="color:var(--mut-2);padding:16px">Belum ada job.</td></tr></tbody>
+        </table>
+      </div>
+      <div class="log mono" id="log" data-placeholder="1"><span class="t">log akan muncul di sini…</span></div>
+    </div>
+
+    <div class="panel out">
+      <div class="row" style="margin:0 0 10px">
+        <h2 style="flex:1">Hasil — siap tempel ke plugin</h2>
+        <button class="btn sm" id="copyBtn" type="button">Copy</button>
+        <button class="btn sm ghost" id="dlBtn" type="button">Download .txt</button>
+      </div>
+      <div class="seg" role="group" aria-label="Format keluaran">
+        <button type="button" data-fmt="plugin" aria-pressed="true">Plugin (old = new,)</button>
+        <button type="button" data-fmt="plain" aria-pressed="false">ID baru saja</button>
+        <button type="button" data-fmt="pairs" aria-pressed="false">CSV</button>
+      </div>
+      <textarea id="output" spellcheck="false" readonly placeholder="Hasil akan muncul di sini setelah job selesai…"></textarea>
+      <p class="hint">
+        Format <b>Plugin</b> itu persis yang diminta tombol <b>Replace Ids</b> di plugin ISpooferMotion.
+        Tempel → Run → plugin menukar <span class="mono">Animation</span> object dan referensi ID di dalam script.
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2 style="margin-bottom:10px">Cek cepat sebelum mulai</h2>
+      <p class="hint" style="margin-top:0">
+        1 · <b>Fetch tanpa login:</b> animasi bisa diambil dari ID-nya tanpa kredensial apa pun — itu sebabnya alur ini masuk akal di web.<br>
+        2 · <b>Upload butuh punyamu:</b> API key/OAuth menentukan siapa pemilik ID barunya. Pastikan <span class="mono">creator</span> di API key sama dengan target di atas.<br>
+        3 · <b>Kuota &amp; hak:</b> hanya proses aset yang kamu berhak. Re-upload karya orang lain tanpa izin bukan cuma melanggar aturan Roblox, tapi juga hak cipta mereka.<br>
+        4 · <b>Verifikasi:</b> kolom ukuran + hash SHA-256 bisa kamu pakai memastikan byte yang di-upload identik dengan yang diambil (tidak ada re-encode).
+      </p>
+    </div>
+  </div>
+</div>
+
+<div class="wrap foot">
+  <span>ISpooferMotion Web v1 · GPL-3.0-or-later · tidak berafiliasi dengan Roblox Corporation.</span>
+  <span style="float:right"><a href="index.html">Dokumentasi</a> · <a href="https://github.com/ISpooferMotion/ISpooferMotion-V2" target="_blank" rel="noopener">Repo V2</a></span>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var API = window.ISM_API_BASE || new URLSearchParams(location.search).get("api") || "";
+  var $ = function (s) { return document.querySelector(s); };
+  var state = {
+    health: null, jobId: null, es: null, poll: null, items: [], fmt: "plugin",
+    output: { plugin: "", plain: "", pairs: "" }, running: false, file: null
+  };
+
+  /* ---------------- util ---------------- */
+  function api(path, opts) {
+    return fetch(API + path, Object.assign({ credentials: "include", headers: { "content-type": "application/json" } }, opts))
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); });
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function logLine(msg, cls) {
+    var el = $("#log");
+    // hanya buang placeholder awal — jangan hapus log yang sudah terisi
+    if (el.getAttribute("data-placeholder") === "1") {
+      el.innerHTML = "";
+      el.setAttribute("data-placeholder", "0");
+    }
+    var time = new Date().toLocaleTimeString("id-ID", { hour12: false });
+    var d = document.createElement("div");
+    d.className = cls || "";
+    d.innerHTML = '<span class="t">' + time + '</span> ' + esc(msg);
+    el.appendChild(d);
+    el.scrollTop = el.scrollHeight;
+  }
+  function save(k, v) { try { localStorage.setItem("ism." + k, v); } catch (e) {} }
+  function load(k) { try { return localStorage.getItem("ism." + k) || ""; } catch (e) { return ""; } }
+
+  /* ---------------- parser pratinjau (sama aturannya dengan server) ---------------- */
+  function previewParse(text) {
+    var ids = [], seen = {}, typeHint = null;
+    String(text || "").split(/\r?\n/).forEach(function (raw) {
+      var line = raw.trim();
+      if (!line) return;
+      var h = line.match(/^--\[\[\s*TYPE:\s*([A-Z]+)\s*\]\]/i);
+      if (h) { typeHint = h[1].toUpperCase(); return; }
+      if (line.indexOf("--") === 0) return;
+      var br = line.match(/^\[(\d{5,})\]/);
+      if (br) { push(br[1]); return; }
+      var pr = line.match(/^(\d{6,})\s*=\s*(\d{6,})/);
+      if (pr) { push(pr[1]); return; }
+      var pf = line.match(/(?:rbxassetid:\/\/|library\/|assetId=|assetid=|id=|id:\s*)(\d{5,})/i);
+      if (pf) { push(pf[1]); return; }
+      var all = line.match(/\d{6,}/g) || [];
+      all.forEach(push);
+    });
+    function push(v) { if (!seen[v]) { seen[v] = 1; ids.push(v); } }
+    ids.sort(function (a, b) { return Number(a) - Number(b); });
+    return { ids: ids, typeHint: typeHint };
+  }
+
+  /* ---------------- health ---------------- */
+  function health() {
+    fetch(API + "/api/health", { credentials: "include" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (h) {
+        state.health = h;
+        $("#healthTag").textContent = "server v" + h.version + " · online";
+        $("#healthTag").style.color = "var(--green)";
+        $("#serverDown").className = "notice err hide";
+        if (h.authModes.serverKey) { $("#authServerKey").className = "notice ok"; $("#authKey").style.display = "none"; $("#authOauth").className = "hide"; }
+        else if (h.authModes.oauth) { $("#authOauth").className = ""; $("#authServerKey").className = "notice ok hide"; }
+        if (h.gate && !h.gateOk) $("#gateBox").style.display = "block";
+        refreshRun();
+      })
+      .catch(function () {
+        $("#healthTag").textContent = "server offline";
+        $("#healthTag").style.color = "var(--red)";
+        $("#serverDown").className = "notice err";
+        refreshRun();
+      });
+  }
+
+  /* ---------------- validasi tombol run ---------------- */
+  function refreshRun() {
+    var healthOk = !!state.health;
+    var hasIds = previewParse($("#input").value).ids.length > 0;
+    $("#probeBtn").disabled = !(healthOk && hasIds);
+    var hasTarget = /^\d+$/.test($("#userId").value.trim() || "0") || /^\d+$/.test($("#groupId").value.trim() || "0");
+    var hasCred = state.health && (state.health.authModes.serverKey || ($("#apiKey").value.trim().length > 8));
+    var isFile = state.file;
+    var hasInput = isFile || previewParse($("#input").value).ids.length > 0;
+    var btn = $("#runBtn");
+    var hint = $("#runHint");
+    if (!healthOk) { hint.textContent = "Server belum jalan — jalankan: node ism-web/server.mjs"; btn.disabled = true; return; }
+    if (!hasInput) { hint.textContent = isFile || $("#tabFile").getAttribute("aria-pressed") === "true" ? "Pilih file dulu." : "Tempel minimal satu asset ID yang valid (6+ digit)."; btn.disabled = true; return; }
+    if (!hasTarget) { hint.textContent = "Isi User ID atau Group ID tujuan upload."; btn.disabled = true; return; }
+    if (!hasCred) { hint.textContent = "Isi Open Cloud API key, atau login OAuth."; btn.disabled = true; return; }
+    var n = isFile ? 1 : previewParse($("#input").value).ids.length;
+    hint.textContent = "Siap: " + n + (isFile ? " file" : " ID") + " → " + ($("#groupId").value.trim() ? "group " + $("#groupId").value.trim() : "user " + $("#userId").value.trim()) + ".";
+    btn.disabled = false;
+  }
+
+  /* ---------------- render tabel ---------------- */
+  var STATUS_LABEL = { pending: "menunggu", fetching: "mengambil", uploading: "mengunggah", processing: "diproses", done: "selesai", error: "gagal", skipped: "dilewati" };
+  function renderTable() {
+    var rows = $("#rows");
+    if (!state.items.length) { rows.innerHTML = '<tr><td colspan="5" style="color:var(--mut-2);padding:16px">Belum ada job.</td></tr>'; return; }
+    rows.innerHTML = state.items.map(function (it) {
+      var badge = '<span class="st ' + it.status + '">' + (STATUS_LABEL[it.status] || it.status) + "</span>";
+      var nid = it.newId ? '<a href="https://www.roblox.com/library/' + it.newId + '" target="_blank" rel="noopener">' + it.newId + "</a>" : (it.error ? '<span title="' + esc(it.error) + '" style="color:#fecaca;cursor:help">' + esc(it.error.slice(0, 40)) + (it.error.length > 40 ? "…" : "") + "</span>" : "—");
+      return "<tr><td>" + it.id + "</td><td>" + badge + "</td><td>" + nid + "</td><td>" +
+        (it.bytesLength ? (it.bytesLength / 1024).toFixed(1) + " KB" : "—") + "</td><td>" + (it.ms ? it.ms : "—") + "</td></tr>";
+    }).join("");
+  }
+
+  function renderSummary(s) {
+    $("#sTotal").textContent = s.total;
+    $("#sDone").textContent = s.done;
+    $("#sErr").textContent = s.error;
+    $("#sLeft").textContent = Math.max(0, s.pending);
+    var pct = s.total ? Math.round(((s.done + s.error + s.skipped) / s.total) * 100) : 0;
+    $("#bar").style.width = pct + "%";
+  }
+
+  function renderOutput(items) {
+    var pairs = items.filter(function (i) { return i.newId; }).map(function (i) { return { oldId: i.id, newId: i.newId }; });
+    state.output.plugin = pairs.map(function (p) { return p.oldId + " = " + p.newId + ","; }).join("\n");
+    state.output.plain = pairs.map(function (p) { return p.newId; }).join("\n");
+    state.output.pairs = pairs.map(function (p) { return p.oldId + "," + p.newId; }).join("\n");
+    $("#output").value = state.output[state.fmt] || "";
+  }
+
+  /* ---------------- jalankan job ---------------- */
+  function startJob() {
+    var isFile = $("#tabFile").getAttribute("aria-pressed") === "true";
+    var btn = $("#runBtn");
+    btn.disabled = true;
+    state.running = true;
+    state.items = [];
+    $("#log").innerHTML = "";
+    $("#log").setAttribute("data-placeholder", "0");
+    logLine("memulai job…");
+    renderTable(); renderOutput([]);
+    setJobState("mengirim permintaan…");
+
+    if (isFile && state.file) {
+      var fd = new FormData();
+      fd.append("file", state.file, state.file.name);
+      fd.append("userId", $("#userId").value.trim());
+      fd.append("groupId", $("#groupId").value.trim());
+      fd.append("apiKey", $("#apiKey").value.trim());
+      fd.append("assetType", "");
+      fd.append("displayName", ($("#namePrefix").value.trim() || "ISM Spoof") + " " + state.file.name.slice(0, 30));
+      fetch(API + "/api/jobs-file", { method: "POST", body: fd, credentials: "include" })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
+        .then(handleJobResponse)
+        .catch(onFail);
+      return;
+    }
+
+    var input = $("#input").value;
+    api("/api/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        input: input,
+        apiKey: $("#apiKey").value.trim(),
+        options: {
+          userId: $("#userId").value.trim(),
+          groupId: $("#groupId").value.trim(),
+          placeId: $("#placeId").value.trim(),
+          namePrefix: $("#namePrefix").value.trim() || "ISM Spoof",
+          assetType: "Animation",
+          rememberKey: $("#rememberKey").checked
+        }
+      })
+    }).then(handleJobResponse).catch(onFail);
+  }
+
+  function handleJobResponse(r) {
+    if (!r.ok) {
+      onFail(r.body && r.body.message ? r.body.message + " (" + (r.body.error || r.status) + ")" : "Gagal membuat job (HTTP " + r.status + ")");
+      if (r.body && r.body.error === "gate-required") $("#gateBox").style.display = "block";
+      return;
+    }
+    state.jobId = r.body.jobId;
+    setJobState("job " + state.jobId.slice(0, 6) + " · jalan");
+    logLine("job dibuat untuk " + r.body.total + " item", "ok");
+    $("#cancelBtn").className = "btn danger";
+    subscribe(state.jobId);
+  }
+
+  function subscribe(jobId) {
+    if (state.es) state.es.close();
+    var es = new EventSource(API + "/api/jobs/" + jobId + "/events");
+    state.es = es;
+    es.onmessage = function (ev) {
+      var d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.type === "snapshot") {
+        state.items = d.items; renderTable(); renderSummary(d.summary); return;
+      }
+      if (d.type === "item") {
+        var it = state.items.filter(function (x) { return x.id === d.id; })[0];
+        if (!it) { it = { id: d.id }; state.items.push(it); }
+        ["status", "newId", "error", "bytesLength", "sha256", "assetType", "ms"].forEach(function (k) { if (d[k] != null) it[k] = d[k]; });
+        renderTable();
+        if (d.status === "done") logLine("ID " + d.id + " → " + d.newId + (d.sha256 ? "  (sha256 " + d.sha256.slice(0, 10) + "…)" : ""), "ok");
+        if (d.status === "error") logLine("ID " + d.id + " gagal: " + d.error, "err");
+        if (d.status === "fetching") logLine("ID " + d.id + " · mengambil isi aset…");
+        return;
+      }
+      if (d.type === "log") { logLine(d.message, d.level === "warn" ? "warn" : d.level === "err" ? "err" : ""); return; }
+      if (d.type === "job") {
+        renderSummary(d.summary);
+        if (d.status && d.status !== "running") {
+          finishJob(d.status);
+        }
+      }
+    };
+    es.onerror = function () {
+      logLine("stream progres terputus — beralih ke mode polling", "warn");
+      startPolling();
+    };
+  }
+
+  /* Cadangan kalau SSE diblokir atau di-buffer proxy (umum di reverse proxy/PaaS). */
+  function startPolling() {
+    if (state.poll || !state.jobId) return;
+    if (state.es) { try { state.es.close(); } catch (e) {} }
+    var ticks = 0;
+    state.poll = setInterval(function () {
+      ticks++;
+      api("/api/jobs/" + state.jobId).then(function (r) {
+        if (!r.ok) return;
+        state.items = r.body.items;
+        renderTable();
+        renderSummary(r.body.summary);
+        if (r.body.output) {
+          state.output = { plugin: r.body.output.plugin, plain: r.body.output.plain, pairs: r.body.output.pairs };
+          $("#output").value = state.output[state.fmt] || "";
+        }
+        var st = r.body.status;
+        if (st && st !== "running" && st !== "queued") {
+          clearInterval(state.poll);
+          state.poll = null;
+          finishJob(st);
+        }
+      });
+      if (ticks > 300) { clearInterval(state.poll); state.poll = null; }
+    }, 1500);
+  }
+
+  function finishJob(status) {
+    if (state.poll) { clearInterval(state.poll); state.poll = null; }
+    setJobState("job " + status + " · selesai");
+    logLine("job selesai: " + status, status === "finished" ? "ok" : "warn");
+    state.running = false;
+    $("#cancelBtn").className = "btn danger hide";
+    refreshRun();
+    if (state.es) state.es.close();
+    api("/api/jobs/" + state.jobId).then(function (r) {
+      if (!r.ok) return;
+      state.items = r.body.items;
+      renderTable(); renderSummary(r.body.summary);
+      if (r.body.output) {
+        state.output = { plugin: r.body.output.plugin, plain: r.body.output.plain, pairs: r.body.output.pairs };
+        $("#output").value = state.output[state.fmt] || "";
+      }
+    });
+  }
+
+  function setJobState(t) { $("#jobState").textContent = t; }
+  function onFail(msg) {
+    state.running = false;
+    $("#cancelBtn").className = "btn danger hide";
+    setJobState("gagal start");
+    logLine(String(msg), "err");
+    refreshRun();
+  }
+
+  /* ---------------- event UI ---------------- */
+  $("#input").addEventListener("input", function () {
+    var p = previewParse($("#input").value);
+    $("#inputCount").textContent = p.ids.length ? p.ids.length + " ID unik terbaca" + (p.typeHint ? " · tipe " + p.typeHint : "") : "";
+    refreshRun();
+  });
+  ["#userId", "#groupId", "#apiKey", "#placeId", "#namePrefix"].forEach(function (sel) {
+    $(sel).addEventListener("input", function () {
+      if (sel === "#userId" && $("#userId").value.trim()) { $("#groupId").value = ""; }
+      if (sel === "#groupId" && $("#groupId").value.trim()) { $("#userId").value = ""; }
+      save(sel.slice(1), $(sel).value);
+      refreshRun();
+    });
+  });
+  $("#sampleBtn").addEventListener("click", function () {
+    $("#input").value = [
+      "--[[ TYPE: ANIMATION ]]",
+      "[180435571] [Idle Animation] [User:2],",
+      "[180426354] [Walk Animation] [User:2],",
+      "rbxassetid://507770239",
+      "https://www.roblox.com/library/507777826/Run",
+      "180436148"
+    ].join("\n");
+    $("#input").dispatchEvent(new Event("input"));
+  });
+  $("#clearBtn").addEventListener("click", function () { $("#input").value = ""; $("#input").dispatchEvent(new Event("input")); });
+  $("#runBtn").addEventListener("click", startJob);
+
+  /* ---- uji ambil: tanpa kredensial, tanpa upload ---- */
+  $("#probeBtn").addEventListener("click", function () {
+    var ids = previewParse($("#input").value).ids;
+    if (!ids.length) return;
+    $("#probeBtn").disabled = true;
+    setJobState("menguji " + Math.min(ids.length, 20) + " ID…");
+    logLine("uji ambil dimulai (tanpa upload, tanpa kredensial)");
+    api("/api/probe", {
+      method: "POST",
+      body: JSON.stringify({ input: $("#input").value, placeId: $("#placeId").value.trim() })
+    }).then(function (r) {
+      $("#probeBtn").disabled = false;
+      if (!r.ok) { logLine("uji gagal: " + (r.body.error || r.status), "err"); setJobState("uji gagal"); return; }
+      state.items = r.body.results.map(function (x) {
+        return {
+          id: x.id, status: x.ok ? "done" : "error",
+          bytesLength: x.bytesLength || null, sha256: x.sha256 || null,
+          ms: x.ms, error: x.ok ? null : x.error, newId: null, probe: true
+        };
+      });
+      renderTable();
+      renderSummary({ total: r.body.checked, done: r.body.ok, error: r.body.failed, skipped: 0, pending: 0 });
+      $("#bar").style.width = "100%";
+      setJobState("uji selesai · tanpa upload");
+      logLine(r.body.ok + " dari " + r.body.checked + " ID bisa ditarik isinya (" +
+        Math.round((r.body.ok / r.body.checked) * 100) + "%)", r.body.ok ? "ok" : "warn");
+      r.body.results.filter(function (x) { return !x.ok; }).slice(0, 6).forEach(function (x) {
+        logLine("ID " + x.id + " tidak bisa ditarik: " + x.error, "warn");
+      });
+      logLine("ID yang gagal di sini tetap bisa diproses lewat tab \"Dari file lokal\".", "");
+    }, function () {
+      $("#probeBtn").disabled = false;
+      logLine("uji gagal: tidak bisa menghubungi server", "err");
+    });
+  });
+  $("#cancelBtn").addEventListener("click", function () {
+    if (!state.jobId) return;
+    api("/api/jobs/" + state.jobId + "/cancel", { method: "POST" }).then(function () { logLine("permintaan batal dikirim", "warn"); });
+  });
+  $("#copyBtn").addEventListener("click", function () {
+    var ta = $("#output");
+    if (!ta.value) return;
+    ta.select();
+    (navigator.clipboard ? navigator.clipboard.writeText(ta.value) : Promise.reject()).then(function () {
+      logLine("hasil tersalin ke clipboard", "ok");
+    }, function () { document.execCommand("copy"); logLine("hasil tersalin", "ok"); });
+  });
+  $("#dlBtn").addEventListener("click", function () {
+    if (!$("#output").value) return;
+    var blob = new Blob([$("#output").value + "\n"], { type: "text/plain" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "ism-replace-" + state.fmt + ".txt";
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".seg button"), function (b) {
+    b.addEventListener("click", function () {
+      Array.prototype.forEach.call(document.querySelectorAll(".seg button"), function (o) { o.setAttribute("aria-pressed", "false"); });
+      b.setAttribute("aria-pressed", "true");
+      state.fmt = b.dataset.fmt;
+      $("#output").value = state.output[state.fmt] || "";
+    });
+  });
+  function setTab(mode) {
+    var isId = mode === "id";
+    $("#tabId").setAttribute("aria-pressed", String(isId));
+    $("#tabFile").setAttribute("aria-pressed", String(!isId));
+    $("#paneId").className = isId ? "" : "hide";
+    $("#paneFile").className = isId ? "hide" : "";
+    refreshRun();
+  }
+  $("#tabId").addEventListener("click", function () { setTab("id"); });
+  $("#tabFile").addEventListener("click", function () { setTab("file"); });
+
+  /* drop file */
+  $("#drop").addEventListener("click", function () { $("#file").click(); });
+  $("#drop").addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#file").click(); } });
+  $("#file").addEventListener("change", function () { pickFile($("#file").files && $("#file").files[0]); });
+  ["dragenter", "dragover"].forEach(function (ev) { $("#drop").addEventListener(ev, function (e) { e.preventDefault(); $("#drop").classList.add("over"); }); });
+  ["dragleave", "drop"].forEach(function (ev) { $("#drop").addEventListener(ev, function (e) { e.preventDefault(); $("#drop").classList.remove("over"); }); });
+  $("#drop").addEventListener("drop", function (e) { pickFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
+  function pickFile(f) {
+    if (!f) return;
+    state.file = f;
+    $("#fileInfo").innerHTML = '<span class="mono" style="font-size:12.5px">' + esc(f.name) + " · " + (f.size / 1024).toFixed(1) + " KB</span>";
+    refreshRun();
+  }
+
+  /* login / logout / gate */
+  $("#loginBtn").addEventListener("click", function () { location.href = API + "/api/oauth/start"; });
+  $("#logoutBtn").addEventListener("click", function () {
+    api("/api/logout", { method: "POST" }).then(function () { location.reload(); });
+  });
+  $("#gateBtn").addEventListener("click", function () {
+    api("/api/gate", { method: "POST", body: JSON.stringify({ password: $("#gatePw").value }) }).then(function (r) {
+      if (r.ok && r.body.ok) { logLine("password diterima", "ok"); health(); }
+      else logLine("password salah", "err");
+    });
+  });
+
+  /* ---------------- restore preferensi (bukan kredensial) ---------------- */
+  ["userId", "groupId", "placeId", "namePrefix"].forEach(function (k) {
+    var v = load(k);
+    if (v) $("#" + k).value = v;
+  });
+  if (!$("#namePrefix").value) $("#namePrefix").value = "ISM Spoof";
+  $("#input").dispatchEvent(new Event("input"));
+  health();
+
+  fetch(API + "/api/me", { credentials: "include" }).then(function (r) { return r.json(); }).then(function (me) {
+    if (me.loggedIn) {
+      $("#logoutBtn").className = "btn sm ghost";
+      $("#authOauth").className = "hide";
+      $("#authServerKey").className = "notice ok";
+      $("#authServerKey").innerHTML = "Login sebagai <b>" + esc(me.username || me.userId) + "</b> (OAuth) — siap upload.";
+      refreshRun();
+    }
+  }).catch(function () {});
+})();
+</script>
+</body>
+</html>

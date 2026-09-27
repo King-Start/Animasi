@@ -1,0 +1,18 @@
+{
+  "name": "ispoofermotion-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web spoofer untuk Roblox: masukkan asset ID -> keluar ID baru, lewat Open Cloud Assets API (tanpa cookie akun).",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node ism-web/server.mjs",
+    "dev": "node ism-web/server.mjs",
+    "test": "node ism-site/tests/core.test.mjs",
+    "test:api": "node ism-web/tests/api.test.mjs",
+    "test:all": "node ism-site/tests/core.test.mjs && node ism-web/tests/api.test.mjs"
+  }
+}

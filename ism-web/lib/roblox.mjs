@@ -1,0 +1,471 @@
+/**
+ * Klien Roblox untuk ISpooferMotion Web.
+ *
+ * Aturan keras yang dipegang file ini:
+ *  1. TIDAK pernah menyentuh cookie sesi. Auth hanya dua jalur resmi:
+ *     Open Cloud API key (`x-api-key`) atau OAuth 2.0 (`Authorization: Bearer`).
+ *  2. Fetch (ambil isi aset) memakai endpoint publik yang memang tidak butuh auth,
+ *     jadi tidak ada kredensial yang dipakai di langkah ini.
+ *  3. Upload menyalin byte apa adanya (byte-for-byte) — tidak ada re-encode, tidak
+ *     ada parsing yang bisa merusak isi animasi.
+ *
+ * Semua base URL bisa di-override supaya bisa diuji terhadap server tiruan.
+ */
+import { createHash } from "node:crypto";
+
+export const DEFAULTS = {
+  apisBase: "https://apis.roblox.com",
+  assetDeliveryBase: "https://assetdelivery.roblox.com",
+  oauthBase: "https://apis.roblox.com/oauth/v1",
+  maxAssetBytes: 20 * 1024 * 1024, // batas 20 MB dari dokumentasi Open Cloud
+  userAgent: "ISpooferMotion-Web/1.0 (+https://github.com/ISpooferMotion)",
+  allowedAssetHosts: [] // tambahan host yang diizinkan; default hanya host Roblox
+};
+
+export class RobloxError extends Error {
+  constructor(message, info = {}) {
+    super(message);
+    this.name = "RobloxError";
+    this.code = info.code ?? "unknown";
+    this.status = info.status ?? 0;
+    this.retryable = info.retryable ?? false;
+    this.detail = info.detail;
+  }
+}
+
+/* ------------------------------------------------------------------ utils */
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * Handle kemungkinan isi aset ter-gzip. Perlu hati-hati karena ada DUA jalur:
+ *  a) CDN mengirim gzip lewat header `content-encoding`, dan runtime fetch (undici)
+ *     sering sudah men-decompress sendiri tanpa membuang header itu;
+ *  b) URL memakai `?encoding=gzip` dan body-nya memang gzip mentah.
+ * Jadi jangan percaya header — periksa magic bytes (1f 8b), dan kalau decompress
+ * gagal, pakai byte aslinya. Salah di sini bikin aset rusak (dan upload-nya ditolak).
+ */
+function looksLikeGzip(bytes) {
+  return bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
+async function maybeGunzip(bytes, _contentEncoding) {
+  if (!looksLikeGzip(bytes)) return bytes;
+  if (typeof DecompressionStream === "undefined") return bytes;
+  try {
+    const ds = new DecompressionStream("gzip");
+    const stream = new Blob([bytes]).stream().pipeThrough(ds);
+    const buf = await new Response(stream).arrayBuffer();
+    const out = new Uint8Array(buf);
+    return out.length ? out : bytes;
+  } catch {
+    // sudah didecompress runtime, atau body bukan gzip valid → pakai apa adanya
+    return bytes;
+  }
+}
+
+/**
+ * PENTING: parameter `encoding=gzip` JANGAN dibuang dari URL CDN.
+ * Uji langsung ke Roblox menunjukkan tanpa parameter itu CDN menjawab
+ * HTTP 403 (error edge Akamai), sedangkan dengan parameter itu 200 +
+ * `content-encoding: gzip`. Karena itu URL diambil apa adanya, dan urusan
+ * dekompresi diserahkan ke runtime + pengecekan magic bytes di maybeGunzip().
+ */
+function keepLocationAsIs(location) {
+  try {
+    return new URL(location).toString();
+  } catch {
+    return location;
+  }
+}
+
+/**
+ * Cegah SSRF: URL isi aset harus host Roblox. Daftar tambahan bisa diberikan
+ * lewat config `allowedAssetHosts` (mis. untuk mirror CDN atau server tiruan
+ * saat pengujian) — jangan diisi dengan host sembarangan di produksi.
+ */
+export const DEFAULT_ASSET_HOSTS = ["rbxcdn.com", "*.rbxcdn.com", "*.roblox.com", "roblox.com"];
+
+export function isAllowedAssetHost(location, extraHosts = []) {
+  try {
+    const host = new URL(location).hostname.toLowerCase();
+    const patterns = [...DEFAULT_ASSET_HOSTS, ...extraHosts];
+    return patterns.some((p) => {
+      const pat = String(p).toLowerCase().trim();
+      if (!pat) return false;
+      if (pat.startsWith("*.")) return host === pat.slice(2) || host.endsWith(pat.slice(1));
+      return host === pat;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/* --------------------------------------------------------- tipe aset */
+
+const ASSET_TYPE_NAMES = {
+  3: "Audio",
+  10: "Model",
+  13: "Decal",
+  24: "Animation",
+  38: "Plugin",
+  40: "Mesh",
+  62: "Video"
+};
+
+export function assetTypeName(assetTypeId) {
+  return ASSET_TYPE_NAMES[Number(assetTypeId)] || (assetTypeId ? "Type#" + assetTypeId : "?");
+}
+
+/** Jenis konten yang diterima Open Cloud, per dokumentasi Assets API. */
+const CONTENT_TYPES = {
+  Animation: "model/x-rbxm",
+  Model: "model/x-rbxm",
+  Audio: ["audio/mpeg", "audio/ogg", "audio/wav", "audio/flac"],
+  Decal: ["image/png", "image/jpeg", "image/bmp", "image/tga"],
+  Image: ["image/png", "image/jpeg", "image/bmp", "image/tga"],
+  Video: ["video/mp4", "video/mov"]
+};
+
+export function contentTypeFor(assetType, fileName = "") {
+  const ext = (fileName.match(/\.([a-z0-9]+)$/i) || [, ""])[1].toLowerCase();
+  const byExtension = {
+    rbxm: "model/x-rbxm", rbxmx: "model/x-rbxm", rbx: "model/x-rbxm",
+    ogg: "audio/ogg", mp3: "audio/mpeg", wav: "audio/wav", flac: "audio/flac",
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", bmp: "image/bmp", tga: "image/tga",
+    mp4: "video/mp4", mov: "video/mov", fbx: "model/fbx", gltf: "model/gltf+json", glb: "model/gltf-binary"
+  };
+  const wanted = CONTENT_TYPES[assetType];
+  const candidate = byExtension[ext];
+  if (Array.isArray(wanted)) return wanted.includes(candidate) ? candidate : wanted[0];
+  return candidate || (typeof wanted === "string" ? wanted : "application/octet-stream");
+}
+
+export function guessAssetTypeFromFile(fileName) {
+  const ext = (fileName.match(/\.([a-z0-9]+)$/i) || [, ""])[1].toLowerCase();
+  if (ext === "rbxm" || ext === "rbxmx" || ext === "rbx") return "Animation";
+  if (["ogg", "mp3", "wav", "flac"].includes(ext)) return "Audio";
+  if (["png", "jpg", "jpeg", "bmp", "tga"].includes(ext)) return "Decal";
+  if (["mp4", "mov"].includes(ext)) return "Video";
+  if (["fbx", "gltf", "glb"].includes(ext)) return "Model";
+  return "Animation";
+}
+
+/* ------------------------------------------------ parsing error Roblox */
+/**
+ * Roblox sering menjawab HTTP 200 walau isinya error, mis:
+ *   {"errors":[{"code":401,"message":"Authentication required to access Asset."}]}
+ * Jadi status code saja tidak cukup — isi body harus diperiksa.
+ */
+function detectBodyError(body, status) {
+  if (!body || typeof body !== "object") return null;
+  if (Array.isArray(body.errors) && body.errors.length) {
+    const e = body.errors[0];
+    return new RobloxError(e.message || "Roblox menolak permintaan", {
+      code: e.code ?? status,
+      status,
+      retryable: e.code === 429 || e.code >= 500
+    });
+  }
+  return null;
+}
+
+/* --------------------------------------------------- OAuth 2.0 helpers */
+
+export function buildAuthorizeUrl(cfg, { state, nonce, redirectUri }) {
+  const url = new URL(cfg.oauthBase.replace(/\/$/, "") + "/authorize");
+  url.searchParams.set("client_id", cfg.clientId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("scope", cfg.scopes || "asset:read asset:write");
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("prompts", "login consent");
+  url.searchParams.set("nonce", nonce);
+  url.searchParams.set("state", state);
+  return url.toString();
+}
+
+export async function exchangeCodeForToken(cfg, { code, redirectUri }) {
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri,
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret
+  });
+  const res = await (cfg.fetch || fetch)(cfg.oauthBase.replace(/\/$/, "") + "/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok || !json || !json.access_token) {
+    throw new RobloxError("Gagal menukar authorization code jadi access token", {
+      code: (json && json.error) || res.status, status: res.status, detail: json
+    });
+  }
+  return json; // { access_token, refresh_token, expires_in, ... }
+}
+
+export async function fetchUserInfo(cfg, accessToken) {
+  const res = await (cfg.fetch || fetch)(cfg.oauthBase.replace(/\/$/, "") + "/userinfo", {
+    headers: { authorization: "Bearer " + accessToken, accept: "application/json" }
+  });
+  if (!res.ok) return null;
+  return res.json().catch(() => null); // { sub, preferred_username, ... }
+}
+
+/* ------------------------------------------------------------- klien */
+
+export function createRobloxClient(config = {}) {
+  const cfg = { ...DEFAULTS, ...config };
+  const doFetch = cfg.fetch || fetch;
+
+  function authHeaders(auth) {
+    if (!auth) throw new RobloxError("Kredensial belum diisi. Butuh Open Cloud API key atau login OAuth.", { code: 401 });
+    if (auth.kind === "apikey") {
+      if (!auth.apiKey || String(auth.apiKey).length < 8) {
+        throw new RobloxError("API key kosong atau terlalu pendek.", { code: 401 });
+      }
+      return { "x-api-key": auth.apiKey };
+    }
+    if (auth.kind === "oauth") {
+      if (!auth.accessToken) throw new RobloxError("Access token OAuth tidak ada.", { code: 401 });
+      return { authorization: "Bearer " + auth.accessToken };
+    }
+    throw new RobloxError("Jenis kredensial tidak dikenal: " + auth.kind, { code: 401 });
+  }
+
+  /* --- 1. resolusi: ID -> daftar lokasi isi aset (TANPA auth) --- */
+  async function resolveAsset(assetId, { placeId } = {}) {
+    const id = String(assetId).trim();
+    if (!/^\d{4,}$/.test(id)) {
+      throw new RobloxError("Bukan asset ID yang valid: " + id, { code: 400 });
+    }
+
+    // jalur utama: v2 (jawabannya JSON berisi lokasi CDN)
+    const v2 = new URL(`${cfg.assetDeliveryBase.replace(/\/$/, "")}/v2/assetId/${id}`);
+    if (placeId) v2.searchParams.set("placeId", String(placeId));
+
+    let res = await doFetch(v2.toString(), {
+      headers: { accept: "application/json", "user-agent": cfg.userAgent },
+      redirect: "follow"
+    });
+    let body = await res.json().catch(() => null);
+
+    const bodyErr = detectBodyError(body, res.status);
+    if (bodyErr) {
+      // fallback: v1 mengembalikan redirect (302) ke CDN
+      const v1 = new URL(`${cfg.assetDeliveryBase.replace(/\/$/, "")}/v1/asset`);
+      v1.searchParams.set("id", id);
+      if (placeId) v1.searchParams.set("placeId", String(placeId));
+      const res1 = await doFetch(v1.toString(), {
+        headers: { accept: "*/*", "user-agent": cfg.userAgent },
+        redirect: "manual"
+      });
+      const loc = res1.headers.get("location");
+      if (loc) return { assetId: id, locations: [keepLocationAsIs(new URL(loc, v1).toString())], assetTypeId: null };
+      if (res1.status === 200) {
+        const bytes = new Uint8Array(await res1.arrayBuffer());
+        return { assetId: id, inline: bytes, locations: [], assetTypeId: null };
+      }
+      throw bodyErr;
+    }
+
+    const locations = Array.isArray(body?.locations)
+      ? body.locations.map((l) => l.location).filter(Boolean)
+      : [];
+    if (!locations.length) {
+      throw new RobloxError("Roblox tidak memberi lokasi isi untuk aset ini.", { code: 404, detail: body });
+    }
+    return { assetId: id, locations, assetTypeId: body.assetTypeId ?? null, raw: body };
+  }
+
+  /* --- 2. download isi aset (TANPA auth) --- */
+  async function downloadAsset(assetId, opts = {}) {
+    const resolved = await resolveAsset(assetId, opts);
+    if (resolved.inline) {
+      const bytes = resolved.inline;
+      if (bytes.length > cfg.maxAssetBytes) {
+        throw new RobloxError(`Aset lebih besar dari batas ${cfg.maxAssetBytes / 1048576} MB.`, { code: 413 });
+      }
+      return { assetId: resolved.assetId, bytes, sha256: sha256(bytes), bytesLength: bytes.length,
+        assetTypeId: resolved.assetTypeId, assetType: assetTypeName(resolved.assetTypeId), location: null };
+    }
+
+    let lastError = null;
+    for (const location of resolved.locations) {
+      if (!isAllowedAssetHost(location, cfg.allowedAssetHosts)) {
+        lastError = new RobloxError("Lokasi isi bukan host Roblox — dibatalkan (proteksi SSRF).", { code: 400 });
+        continue;
+      }
+      const url = keepLocationAsIs(location);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await doFetch(url, {
+            headers: { accept: "*/*", "user-agent": cfg.userAgent },
+            redirect: "follow"
+          });
+          if (res.status === 429 || res.status >= 500) {
+            lastError = new RobloxError("CDN sibuk (HTTP " + res.status + ")", { code: res.status, retryable: true });
+            await sleep(400 * (attempt + 1));
+            continue;
+          }
+          if (!res.ok) {
+            lastError = new RobloxError("Gagal mengambil isi aset (HTTP " + res.status + ")", { code: res.status });
+            break;
+          }
+          const raw = new Uint8Array(await res.arrayBuffer());
+          const bytes = await maybeGunzip(raw, res.headers.get("content-encoding"));
+          if (bytes.length > cfg.maxAssetBytes) {
+            throw new RobloxError(`Aset ${bytes.length} byte melebihi batas ${cfg.maxAssetBytes / 1048576} MB.`, { code: 413 });
+          }
+          if (!bytes.length) {
+            lastError = new RobloxError("Isi aset kosong.", { code: 502, retryable: true });
+            continue;
+          }
+          return {
+            assetId: resolved.assetId, bytes, sha256: sha256(bytes), bytesLength: bytes.length,
+            assetTypeId: resolved.assetTypeId, assetType: assetTypeName(resolved.assetTypeId), location: url
+          };
+        } catch (err) {
+          lastError = err instanceof RobloxError ? err : new RobloxError("Error jaringan saat mengambil aset: " + err.message, { retryable: true });
+          await sleep(400 * (attempt + 1));
+        }
+      }
+    }
+    throw lastError || new RobloxError("Semua lokasi isi gagal diambil.", { code: 502 });
+  }
+
+  /* --- 3. upload ke Open Cloud (auth: API key atau OAuth) --- */
+  async function uploadAsset({ bytes, fileName, assetType, displayName, description, creator, auth }) {
+    if (!bytes || !bytes.length) throw new RobloxError("Tidak ada byte untuk di-upload.", { code: 400 });
+    if (bytes.length > cfg.maxAssetBytes) {
+      throw new RobloxError(`File ${(bytes.length / 1048576).toFixed(1)} MB melebihi batas 20 MB.`, { code: 413 });
+    }
+    const creatorId = String(creator?.userId || creator?.groupId || "").trim();
+    if (!/^\d+$/.test(creatorId)) {
+      throw new RobloxError("Target upload tidak valid. Isi User ID atau Group ID tujuan.", { code: 400 });
+    }
+
+    const request = {
+      assetType,
+      displayName: (displayName || "ISM Asset").slice(0, 50),
+      description: (description || "Uploaded via ISpooferMotion Web").slice(0, 1000),
+      creationContext: creator.groupId ? { creator: { groupId: creatorId } } : { creator: { userId: creatorId } }
+    };
+
+    const form = new FormData();
+    form.append("request", JSON.stringify(request));
+    form.append(
+      "fileContent",
+      new Blob([bytes], { type: contentTypeFor(assetType, fileName) }),
+      fileName || "asset.rbxm"
+    );
+
+    const url = `${cfg.apisBase.replace(/\/$/, "")}/assets/v1/assets`;
+    let res, json;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      res = await doFetch(url, { method: "POST", headers: authHeaders(auth), body: form });
+      json = await res.json().catch(() => null);
+      if (res.status === 429 || res.status >= 500) {
+        const wait = Number(res.headers.get("retry-after")) * 1000 || 800 * (attempt + 1);
+        await sleep(Math.min(wait, 8000));
+        continue;
+      }
+      break;
+    }
+
+    if (!res.ok) {
+      const msg = (json && json.errors && json.errors[0] && json.errors[0].message) || ("HTTP " + res.status);
+      throw new RobloxError("Upload ditolak Roblox: " + msg, {
+        code: (json?.errors?.[0]?.code) ?? res.status,
+        status: res.status,
+        retryable: res.status === 429 || res.status >= 500
+      });
+    }
+
+    return {
+      operationPath: json?.path || null,
+      operationId: json?.operationId || (json?.path ? String(json.path).split("/").pop() : null),
+      done: !!json?.done,
+      immediateAssetId: json?.response?.assetId || null
+    };
+  }
+
+  /* --- 4. tunggu operasi selesai -> asset ID baru --- */
+  async function pollOperation(operation, auth, { timeoutMs = 60000, intervalMs = 900 } = {}) {
+    const auth2 = authHeaders(auth);
+    const deadline = Date.now() + timeoutMs;
+    let op = operation;
+
+    if (op.immediateAssetId) return { assetId: String(op.immediateAssetId), attempts: 0 };
+
+    while (Date.now() < deadline) {
+      const path = op.operationPath
+        ? (String(op.operationPath).startsWith("http") ? op.operationPath : `${cfg.apisBase.replace(/\/$/, "")}/${String(op.operationPath).replace(/^\//, "")}`)
+        : `${cfg.apisBase.replace(/\/$/, "")}/assets/v1/operations/${op.operationId}`;
+
+      const res = await doFetch(path, { headers: { ...auth2, accept: "application/json" } });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) {
+        const msg = (json && json.errors && json.errors[0] && json.errors[0].message) || ("HTTP " + res.status);
+        throw new RobloxError("Gagal cek status operasi: " + msg, { code: res.status, status: res.status });
+      }
+      if (json?.error) {
+        throw new RobloxError("Upload gagal diproses Roblox: " + (json.error.message || json.error.code), { code: "operation-failed" });
+      }
+      const assetId = json?.response?.assetId || json?.assetId;
+      if (json?.done && assetId) return { assetId: String(assetId), raw: json };
+      if (json?.done && !assetId) {
+        throw new RobloxError("Operasi selesai tapi Roblox tidak memberi asset ID.", { code: "no-asset-id", detail: json });
+      }
+      await sleep(intervalMs);
+    }
+    throw new RobloxError("Upload belum selesai setelah " + Math.round(timeoutMs / 1000) + " detik. Cek Creator Dashboard.", {
+      code: "timeout", retryable: true
+    });
+  }
+
+  return {
+    config: cfg,
+    resolveAsset,
+    downloadAsset,
+    uploadAsset,
+    pollOperation,
+    assetTypeName,
+    contentTypeFor,
+    guessAssetTypeFromFile,
+    sha256,
+    authHeaders,
+    /** Alur lengkap: ID lama -> byte -> upload -> ID baru */
+    async spoofById(assetId, opts) {
+      const dl = await downloadAsset(assetId, { placeId: opts.placeId });
+      const assetType = opts.assetType || "Animation";
+      if (dl.assetTypeId && dl.assetTypeId !== 24 && assetType === "Animation") {
+        throw new RobloxError(
+          `Aset ${assetId} bertipe ${dl.assetType}. Web spoofer hanya bisa mengambil isi tipe Animation tanpa login; ` +
+          `untuk tipe lain, drag & drop filenya di mode "file lokal".`,
+          { code: "wrong-type" }
+        );
+      }
+      const up = await uploadAsset({
+        bytes: dl.bytes, fileName: `ism-${assetId}.rbxm`, assetType,
+        displayName: (opts.namePrefix || "ISM Spoof") + " " + assetId,
+        description: opts.description || `Re-upload dari asset ${assetId} via ISpooferMotion Web`,
+        creator: opts.creator, auth: opts.auth
+      });
+      const done = await pollOperation(up, opts.auth, { timeoutMs: opts.pollTimeoutMs });
+      return {
+        oldId: String(assetId), newId: done.assetId,
+        bytesLength: dl.bytesLength, sha256: dl.sha256, sourceLocation: dl.location,
+        assetType, assetTypeId: dl.assetTypeId
+      };
+    }
+  };
+}
+
+export { sha256 };

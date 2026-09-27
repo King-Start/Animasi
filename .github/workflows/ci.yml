@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Test logika inti situs
+        run: node ism-site/tests/core.test.mjs
+      - name: Test end-to-end Web Spoofer (vs server Roblox tiruan)
+        run: node ism-web/tests/api.test.mjs
