@@ -944,6 +944,13 @@ heading("8. Tidak ada jalur cookie (titik paling penting)");
     !/<input[^>]*id=["']?[^"'>]*cookie/i.test(src) &&
     !/document\.cookie\s*=[^;]*ROBLOSECURITY/i.test(src),
     "ada kolom/penulisan cookie di halaman");
+  const idxSrc = await (await fetch(BASE + "/index.html")).text();
+  ok("halaman spoofer memakai token tema resmi ISM (mint #a7f3d0)",
+    /--ism-primary:#a7f3d0/.test(src) && /--primary|--green:var\(--ism-success\)/.test(src),
+    "token tema tidak ditemukan");
+  ok("halaman utama juga memakai token tema resmi",
+    /--ism-primary:#a7f3d0/.test(idxSrc), "index.html belum memakai token ISM");
+
   ok("penyebutan .ROBLOSECURITY di halaman hanya sebagai penjelasan",
     (src.match(/ROBLOSECURITY/g) || []).length <= 2 &&
     /tidak menerima, meneruskan, maupun menyimpan cookie/i.test(src),

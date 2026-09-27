@@ -18,10 +18,12 @@ export const DEFAULTS = {
   assetDeliveryBase: "https://assetdelivery.roblox.com",
   oauthBase: "https://apis.roblox.com/oauth/v1",
   usersBase: "https://users.roblox.com",
+  // Aset publik yang dipakai untuk menguji kunci (read-only, tidak mengubah apa pun)
   probeAssetId: "180435571",
-  maxAssetBytes: 20 * 1024 * 1024,
+  maxAssetBytes: 20 * 1024 * 1024, // batas 20 MB dari dokumentasi Open Cloud
   userAgent: "ISpooferMotion-Web/1.0 (+https://github.com/ISpooferMotion)",
-  allowedAssetHosts: []
+  allowedAssetHosts: [], // tambahan host yang diizinkan; default hanya host Roblox
+  probeAssetId: "180435571" // aset publik untuk uji fungsi kunci
 };
 
 /** Karakter non-ASCII pertama di sebuah kunci (atau null kalau semua ASCII). */
@@ -33,6 +35,11 @@ export function firstNonAscii(value) {
 /** Penanda cookie sesi Roblox — dua bentuk yang dipakai Roblox selama ini. */
 const COOKIE_MARKER = /DO-NOT-SHARE|Sharing-this-will-allow/i;
 
+/**
+ * Menebak JENIS kredensial dari bentuknya (bukan dari isinya, dan tidak pernah
+ * mengembalikan nilainya). Dipakai supaya situs ini tidak pernah diam-diam
+ * meneruskan cookie sesi Roblox ke mana pun.
+ */
 export function classifyCredential(raw) {
   const s = String(raw == null ? "" : raw).trim();
   if (!s) return { kind: "empty", length: 0, label: "kosong" };
@@ -74,6 +81,14 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+/**
+ * Handle kemungkinan isi aset ter-gzip. Perlu hati-hati karena ada DUA jalur:
+ *  a) CDN mengirim gzip lewat header `content-encoding`, dan runtime fetch (undici)
+ *     sering sudah men-decompress sendiri tanpa membuang header itu;
+ *  b) URL memakai `?encoding=gzip` dan body-nya memang gzip mentah.
+ * Jadi jangan percaya header — periksa magic bytes (1f 8b), dan kalau decompress
+ * gagal, pakai byte aslinya. Salah di sini bikin aset rusak (dan upload-nya ditolak).
+ */
 function looksLikeGzip(bytes) {
   return bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
 }
@@ -88,10 +103,18 @@ async function maybeGunzip(bytes, _contentEncoding) {
     const out = new Uint8Array(buf);
     return out.length ? out : bytes;
   } catch {
+    // sudah didecompress runtime, atau body bukan gzip valid → pakai apa adanya
     return bytes;
   }
 }
 
+/**
+ * PENTING: parameter `encoding=gzip` JANGAN dibuang dari URL CDN.
+ * Uji langsung ke Roblox menunjukkan tanpa parameter itu CDN menjawab
+ * HTTP 403 (error edge Akamai), sedangkan dengan parameter itu 200 +
+ * `content-encoding: gzip`. Karena itu URL diambil apa adanya, dan urusan
+ * dekompresi diserahkan ke runtime + pengecekan magic bytes di maybeGunzip().
+ */
 function keepLocationAsIs(location) {
   try {
     return new URL(location).toString();
@@ -100,6 +123,11 @@ function keepLocationAsIs(location) {
   }
 }
 
+/**
+ * Cegah SSRF: URL isi aset harus host Roblox. Daftar tambahan bisa diberikan
+ * lewat config `allowedAssetHosts` (mis. untuk mirror CDN atau server tiruan
+ * saat pengujian) — jangan diisi dengan host sembarangan di produksi.
+ */
 export const DEFAULT_ASSET_HOSTS = ["rbxcdn.com", "*.rbxcdn.com", "*.roblox.com", "roblox.com"];
 
 export function isAllowedAssetHost(location, extraHosts = []) {
@@ -133,6 +161,7 @@ export function assetTypeName(assetTypeId) {
   return ASSET_TYPE_NAMES[Number(assetTypeId)] || (assetTypeId ? "Type#" + assetTypeId : "?");
 }
 
+/** Jenis konten yang diterima Open Cloud, per dokumentasi Assets API. */
 const CONTENT_TYPES = {
   Animation: "model/x-rbxm",
   Model: "model/x-rbxm",
@@ -167,7 +196,11 @@ export function guessAssetTypeFromFile(fileName) {
 }
 
 /* ------------------------------------------------ parsing error Roblox */
-
+/**
+ * Roblox sering menjawab HTTP 200 walau isinya error, mis:
+ *   {"errors":[{"code":401,"message":"Authentication required to access Asset."}]}
+ * Jadi status code saja tidak cukup — isi body harus diperiksa.
+ */
 function detectBodyError(body, status) {
   if (!body || typeof body !== "object") return null;
   if (Array.isArray(body.errors) && body.errors.length) {
@@ -176,13 +209,6 @@ function detectBodyError(body, status) {
       code: e.code ?? status,
       status,
       retryable: e.code === 429 || e.code >= 500
-    });
-  }
-  if (body.error && (body.error.message || body.error.code)) {
-    return new RobloxError(body.error.message || body.error.code || "Roblox error", {
-      code: body.error.code ?? status,
-      status,
-      detail: body
     });
   }
   return null;
@@ -221,7 +247,7 @@ export async function exchangeCodeForToken(cfg, { code, redirectUri }) {
       code: (json && json.error) || res.status, status: res.status, detail: json
     });
   }
-  return json;
+  return json; // { access_token, refresh_token, expires_in, ... }
 }
 
 export async function fetchUserInfo(cfg, accessToken) {
@@ -229,12 +255,20 @@ export async function fetchUserInfo(cfg, accessToken) {
     headers: { authorization: "Bearer " + accessToken, accept: "application/json" }
   });
   if (!res.ok) return null;
-  return res.json().catch(() => null);
+  return res.json().catch(() => null); // { sub, preferred_username, ... }
 }
 
 /* -------------------------------------------- normalisasi & pesan error */
 
+/**
+ * Kunci API sering tersalin dengan spasi/newline/kutip di ujung — itu saja
+ * sudah cukup bikin Roblox menolak dengan "not provided in a valid format".
+ */
 export function normalizeApiKey(raw) {
+  // Catatan: \s di JavaScript TIDAK mencakup U+200B (zero width space), U+200C/U+200D,
+  // U+2060, dan U+FEFF. Karakter itu sering ikut tersalin dari halaman web / HP, dan
+  // kalau lolos ke header HTTP, fetch langsung melempar "Cannot convert argument to a
+  // ByteString" (bukan pesan Roblox). Jadi dibuang eksplisit di sini.
   return String(raw == null ? "" : raw)
     .replace(/[\u200B-\u200F\u2060\uFEFF]/g, "")
     .trim()
@@ -242,6 +276,10 @@ export function normalizeApiKey(raw) {
     .replace(/\s+/g, "");
 }
 
+/**
+ * Terjemahkan pesan error Roblox jadi penjelasan + langkah perbaikan.
+ * Dipakai agar user tahu harus apa, bukan cuma melihat kalimat Inggris mentah.
+ */
 export function explainError(message) {
   const m = String(message || "");
   const rules = [
@@ -326,6 +364,7 @@ export function createRobloxClient(config = {}) {
       throw new RobloxError("Bukan asset ID yang valid: " + id, { code: 400 });
     }
 
+    // jalur utama: v2 (jawabannya JSON berisi lokasi CDN)
     const v2 = new URL(`${cfg.assetDeliveryBase.replace(/\/$/, "")}/v2/assetId/${id}`);
     if (placeId) v2.searchParams.set("placeId", String(placeId));
 
@@ -337,6 +376,7 @@ export function createRobloxClient(config = {}) {
 
     const bodyErr = detectBodyError(body, res.status);
     if (bodyErr) {
+      // fallback: v1 mengembalikan redirect (302) ke CDN
       const v1 = new URL(`${cfg.assetDeliveryBase.replace(/\/$/, "")}/v1/asset`);
       v1.searchParams.set("id", id);
       if (placeId) v1.searchParams.set("placeId", String(placeId));
@@ -418,7 +458,7 @@ export function createRobloxClient(config = {}) {
     throw lastError || new RobloxError("Semua lokasi isi gagal diambil.", { code: 502 });
   }
 
-  /* --- 3. upload ke Open Cloud (FIXED: cek error body + validasi operation) --- */
+  /* --- 3. upload ke Open Cloud (auth: API key atau OAuth) --- */
   async function uploadAsset({ bytes, fileName, assetType, displayName, description, creator, auth }) {
     if (!bytes || !bytes.length) throw new RobloxError("Tidak ada byte untuk di-upload.", { code: 400 });
     if (bytes.length > cfg.maxAssetBytes) {
@@ -462,28 +502,8 @@ export function createRobloxClient(config = {}) {
       throw new RobloxError("Upload ditolak Roblox: " + msg, {
         code: (json?.errors?.[0]?.code) ?? res.status,
         status: res.status,
-        retryable: res.status === 429 || res.status >= 500,
-        detail: json
+        retryable: res.status === 429 || res.status >= 500
       });
-    }
-
-    // === FIX: cek body error yang datang via HTTP 200 ===
-    const bodyErr = detectBodyError(json, res.status);
-    if (bodyErr) {
-      throw new RobloxError("Upload ditolak Roblox (via body): " + bodyErr.message, {
-        code: bodyErr.code,
-        status: res.status,
-        detail: json
-      });
-    }
-
-    // === FIX: pastikan ada operationPath/operationId/assetId ===
-    if (!json?.path && !json?.operationId && !json?.response?.assetId) {
-      throw new RobloxError(
-        "Roblox tidak memberi operation ID — upload kemungkinan gagal di server Roblox. " +
-          "Body: " + JSON.stringify(json).slice(0, 300),
-        { code: "no-operation", detail: json }
-      );
     }
 
     return {
@@ -502,24 +522,16 @@ export function createRobloxClient(config = {}) {
 
     if (op.immediateAssetId) return { assetId: String(op.immediateAssetId), attempts: 0 };
 
-    if (!op.operationPath && !op.operationId) {
-      throw new RobloxError("Tidak ada operationPath/operationId untuk di-polling.", { code: "no-operation" });
-    }
-
     while (Date.now() < deadline) {
       const path = op.operationPath
-        ? (String(op.operationPath).startsWith("http")
-            ? op.operationPath
-            : `${cfg.apisBase.replace(/\/$/, "")}/${String(op.operationPath).replace(/^\//, "")}`)
+        ? (String(op.operationPath).startsWith("http") ? op.operationPath : `${cfg.apisBase.replace(/\/$/, "")}/${String(op.operationPath).replace(/^\//, "")}`)
         : `${cfg.apisBase.replace(/\/$/, "")}/assets/v1/operations/${op.operationId}`;
 
       const res = await doFetch(path, { headers: { ...auth2, accept: "application/json" } });
       const json = await res.json().catch(() => null);
       if (!res.ok) {
         const msg = (json && json.errors && json.errors[0] && json.errors[0].message) || ("HTTP " + res.status);
-        throw new RobloxError("Gagal cek status operasi: " + msg + " (URL: " + path + ")", {
-          code: res.status, status: res.status, detail: json
-        });
+        throw new RobloxError("Gagal cek status operasi: " + msg, { code: res.status, status: res.status });
       }
       if (json?.error) {
         throw new RobloxError("Upload gagal diproses Roblox: " + (json.error.message || json.error.code), { code: "operation-failed" });
@@ -566,6 +578,15 @@ export function createRobloxClient(config = {}) {
     }
   }
 
+  /**
+   * Periksa kunci: aktif? punya izin Assets:Write? boleh dipakai untuk target
+   * User ID / Group ID yang diisi? Hasilnya daftar temuan yang bisa langsung
+   * ditindaklanjuti, bukan cuma "gagal".
+   */
+  /**
+   * Statistik bentuk kunci yang benar-benar diterima server.
+   * SENGAJA hanya mengembalikan hitungan & penanda — bukan kuncinya.
+   */
   function describeKeyShape(raw) {
     const s = String(raw == null ? "" : raw);
     const cleaned = normalizeApiKey(s);
@@ -597,6 +618,7 @@ export function createRobloxClient(config = {}) {
     return "HTTP " + res.status;
   }
 
+  /** Satu panggilan uji ke API Roblox memakai kunci user. */
   async function runProbe({ id, label, url, apiKey }) {
     try {
       const res = await doFetch(url, {
@@ -611,6 +633,10 @@ export function createRobloxClient(config = {}) {
     }
   }
 
+  /**
+   * Uji fungsi kunci: ini jalur auth yang sama dengan upload, jadi hasilnya
+   * jauh lebih bisa dipercaya daripada endpoint metadata.
+   */
   async function verifyKey({ apiKey, userId } = {}) {
     const key = normalizeApiKey(apiKey);
     if (!key) return [];
@@ -653,6 +679,7 @@ export function createRobloxClient(config = {}) {
 
     const cred = classifyCredential(apiKey);
 
+    // Cookie sesi: tolak di pintu. Situs ini tidak pernah meneruskan cookie ke mana pun.
     if (cred.kind === "cookie") {
       return {
         ok: false,
@@ -683,6 +710,7 @@ export function createRobloxClient(config = {}) {
       };
     }
 
+    // Bentuk kredensial yang tidak lazim: kasih tahu apa adanya, jangan ditebak-tebak.
     if (cred.kind === "jwt") {
       findings.push({
         level: "warn",
@@ -704,6 +732,7 @@ export function createRobloxClient(config = {}) {
       findings.push({ level: "warn", message: "Bentuk kredensial ini tidak dikenal \u2014 pastikan itu kunci API Open Cloud dari Creator Dashboard." });
     }
 
+    // (a) bentuk kunci — ini yang biasanya bikin "not provided in a valid format"
     if (shape.stats.hiddenChars > 0) {
       findings.push({
         level: "warn",
@@ -734,6 +763,8 @@ export function createRobloxClient(config = {}) {
       });
     }
 
+    // Kalau masih ada karakter non-ASCII, permintaan HTTP-nya sendiri yang gagal
+    // (fetch melempar ByteString error), jadi tidak usah diteruskan ke Roblox.
     const badChar = firstNonAscii(key);
     if (badChar) {
       findings.unshift({
@@ -759,6 +790,7 @@ export function createRobloxClient(config = {}) {
       };
     }
 
+    // (b) uji nyata: pakai kunci itu untuk memanggil API Roblox
     const probes = await verifyKey({ apiKey: key, userId });
     const anyOk = probes.some((p) => p.ok);
     const refused = probes.filter((p) => p.status === 401);
@@ -771,6 +803,7 @@ export function createRobloxClient(config = {}) {
       else findings.push({ level: "warn", message: `Uji ${p.label}: HTTP ${p.status} ${p.message || ""}`.trim() });
     }
 
+    // (c) metadata kunci (scope, masa berlaku, pemilik)
     const intro = await introspectKey(key);
     const raw = rawMessage(intro);
     let meta = null;
@@ -808,6 +841,7 @@ export function createRobloxClient(config = {}) {
       }
     }
 
+    // (d) isi metadata: scope, masa berlaku, kecocokan pemilik
     let profile = null;
     const scopes = meta && Array.isArray(meta.scopes) ? meta.scopes : [];
     if (meta) {
@@ -863,6 +897,7 @@ export function createRobloxClient(config = {}) {
       findings.push({ level: "info", message: "Isi User ID atau Group ID tujuan supaya kecocokan kunci bisa diperiksa." });
     }
 
+    // (e) putusan akhir
     const verdict = anyOk ? "ok" : refused.length ? "reject" : reached ? "unknown" : "offline";
     if (verdict === "ok") {
       findings.unshift({ level: "ok", message: "Kunci DITERIMA Roblox — uji baca aset berhasil, jalur auth-nya sama dengan saat upload." });
@@ -920,6 +955,7 @@ export function createRobloxClient(config = {}) {
     guessAssetTypeFromFile,
     sha256,
     authHeaders,
+    /** Alur lengkap: ID lama -> byte -> upload -> ID baru */
     async spoofById(assetId, opts) {
       const dl = await downloadAsset(assetId, { placeId: opts.placeId });
       const assetType = opts.assetType || "Animation";

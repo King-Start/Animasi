@@ -15,7 +15,7 @@
     --bg:#05070d; --bg-2:#080c15; --panel:rgba(255,255,255,.028); --panel-2:rgba(255,255,255,.05);
     --line:rgba(255,255,255,.085); --line-2:rgba(255,255,255,.16);
     --txt:#e8eef8; --mut:#8b9ab2; --mut-2:#63718a;
-    --cyan:#22d3ee; --violet:#a855f7; --green:#34d399; --amber:#fbbf24; --pink:#f472b6;
+    --cyan:#5eead4; --violet:#a7f3d0; --green:#4ade80; --amber:#fbbf24; --pink:#f472b6;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
     --r:16px; --r-sm:10px; --max:1180px;
@@ -318,6 +318,25 @@
   @media (prefers-reduced-motion:reduce){
     *{animation:none!important;transition:none!important}
     html{scroll-behavior:auto}
+  }
+
+  /* ---- Tema resmi ISpooferMotion (token dari ISM-Library -> packages/ui/theme/ism-library.css) ----
+     Nilai ditaruh di sini supaya halaman tetap benar walau dibuka sebagai file lepas. */
+  :root{
+    --ism-bg-base:#08090c; --ism-bg-surface:#111114; --ism-bg-elevated:#18181c;
+    --ism-border-subtle:rgba(255,255,255,.05); --ism-border-strong:rgba(255,255,255,.10);
+    --ism-text-primary:#eeedf2; --ism-text-secondary:#8b8b9c; --ism-text-muted:#58586a;
+    --ism-primary:#a7f3d0; --ism-success:#4ade80; --ism-danger:#f87171; --ism-warning:#fbbf24;
+    --ism-radius-sm:6px; --ism-radius-md:10px; --ism-radius-lg:14px;
+  }
+  /* petakan ke variabel halaman ini */
+  :root{
+    --bg:var(--ism-bg-base); --bg-2:var(--ism-bg-surface);
+    --panel:rgba(255,255,255,.03); --panel-2:rgba(255,255,255,.055);
+    --line:var(--ism-border-subtle); --line-2:var(--ism-border-strong);
+    --txt:var(--ism-text-primary); --mut:var(--ism-text-secondary); --mut-2:var(--ism-text-muted);
+    --green:var(--ism-success); --red:var(--ism-danger); --amber:var(--ism-warning);
+    --r:var(--ism-radius-lg); --r-sm:var(--ism-radius-md);
   }
 </style>
 </head>

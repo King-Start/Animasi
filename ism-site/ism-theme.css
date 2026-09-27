@@ -1,0 +1,20 @@
+/* Token tema ISpooferMotion (salinan dari ISM-Library/packages/ui/theme/ism-library.css).
+   Halaman sudah memuatnya secara inline; berkas ini untuk dipakai ulang proyek lain. */
+/* ---- Tema resmi ISpooferMotion (token dari ISM-Library -> packages/ui/theme/ism-library.css) ----
+     Nilai ditaruh di sini supaya halaman tetap benar walau dibuka sebagai file lepas. */
+  :root{
+    --ism-bg-base:#08090c; --ism-bg-surface:#111114; --ism-bg-elevated:#18181c;
+    --ism-border-subtle:rgba(255,255,255,.05); --ism-border-strong:rgba(255,255,255,.10);
+    --ism-text-primary:#eeedf2; --ism-text-secondary:#8b8b9c; --ism-text-muted:#58586a;
+    --ism-primary:#a7f3d0; --ism-success:#4ade80; --ism-danger:#f87171; --ism-warning:#fbbf24;
+    --ism-radius-sm:6px; --ism-radius-md:10px; --ism-radius-lg:14px;
+  }
+  /* petakan ke variabel halaman ini */
+  :root{
+    --bg:var(--ism-bg-base); --bg-2:var(--ism-bg-surface);
+    --panel:rgba(255,255,255,.03); --panel-2:rgba(255,255,255,.055);
+    --line:var(--ism-border-subtle); --line-2:var(--ism-border-strong);
+    --txt:var(--ism-text-primary); --mut:var(--ism-text-secondary); --mut-2:var(--ism-text-muted);
+    --green:var(--ism-success); --red:var(--ism-danger); --amber:var(--ism-warning);
+    --r:var(--ism-radius-lg); --r-sm:var(--ism-radius-md);
+  }

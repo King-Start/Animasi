@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ISpooferMotion — Ambil aset di sesimu sendiri
 // @namespace    https://github.com/ISpooferMotion
-// @version      1.0.0
+// @version      1.1.0
 // @description  Mengunduh isi aset Roblox (termasuk animasi yang dikunci) memakai sesi login di browser-mu, lalu bisa langsung dikirim ke halaman ISpooferMotion untuk di-upload pakai kunci API-mu. Cookie sesimu TIDAK PERNAH dibaca atau dikirim oleh script ini.
 // @author       ISpooferMotion
 // @license      GPL-3.0-or-later
@@ -122,6 +122,94 @@
     return m || ("HTTP " + status);
   }
 
+  /** UUID acak (dipakai sebagai requestId batch dan gameId). */
+  function uuidish() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+      const r = (Math.random() * 16) | 0;
+      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+
+  /** URL CDN yang ditanam Roblox di halaman library (jalur 1 milik V2). */
+  function libraryPageCdnUrl(html) {
+    const text = String(html || "");
+    const idx = text.indexOf('data-mediathumb-url="');
+    if (idx < 0) return null;
+    const start = idx + 'data-mediathumb-url="'.length;
+    const end = text.indexOf('"', start);
+    if (end < 0) return null;
+    const url = text.slice(start, end).trim();
+    return /^https?:\/\//.test(url) ? url : null;
+  }
+
+  /** Ambil Location (redirect) dari teks header, dan hanya terima host Roblox CDN. */
+  function locationFromHeaders(headerText) {
+    const m = String(headerText || "").match(/^\s*location:\s*(\S+)\s*$/im);
+    if (!m) return null;
+    const url = m[1].trim();
+    return /rbxcdn\.com/i.test(url) ? url : null;
+  }
+
+  /** Header konteks game yang dipakai V2 saat aset dibatasi sebuah place. */
+  function gameContextHeaders(placeId, gameId) {
+    const pid = String(placeId == null ? "" : placeId).trim();
+    if (!/^\d+$/.test(pid) || pid === "0") return {};
+    const gid = String(gameId || "").trim() || "00000000-0000-4000-8000-000000000000";
+    return {
+      "Roblox-Place-Id": pid,
+      "Roblox-Game-Id": gid,
+      "Roblox-Session-Id": JSON.stringify({ SessionId: gid, GameId: gid, PlaceId: Number(pid) })
+    };
+  }
+
+  /** Body batch /v2/assets/batch — bentuknya sama dengan struct BatchAssetRequest di V2. */
+  function buildBatchBody(id, opts) {
+    const o = opts || {};
+    const body = [{
+      assetName: String(o.assetName || "asset-" + id),
+      assetType: String(o.assetType || "Animation"),
+      assetId: Number(id),
+      requestId: String(o.requestId || ""),
+      clientInsert: true
+    }];
+    const pid = String(o.placeId == null ? "" : o.placeId).trim();
+    if (/^\d+$/.test(pid) && pid !== "0") {
+      body[0].placeId = Number(pid);
+      body[0].serverPlaceId = Number(pid);
+    }
+    return body;
+  }
+
+  /** Baca jawaban batch: cari location untuk requestId kita, atau pesan errornya. */
+  function parseBatchResponse(json, requestId) {
+    const arr = Array.isArray(json) ? json : (json && Array.isArray(json.assets) ? json.assets : []);
+    for (const item of arr) {
+      if (!item) continue;
+      const rid = item.requestId || item.RequestId;
+      if (requestId && rid && String(rid) !== String(requestId)) continue;
+      const loc = item.location || item.Location;
+      if (typeof loc === "string" && loc) return { url: loc };
+      const errs = item.errors || item.Errors;
+      if (Array.isArray(errs) && errs.length) {
+        const msg = String(errs[0].message || errs[0].Message || "");
+        return { error: msg, accessDenied: /not authorized|access denied|do not have permission/i.test(msg) };
+      }
+    }
+    return { error: "jawaban batch tidak memuat lokasi aset", accessDenied: false };
+  }
+
+  /** Retry-After (detik atau tanggal) → milidetik. */
+  function retryAfterMs(headerText) {
+    const m = String(headerText || "").match(/^\s*retry-after:\s*(\S+)\s*$/im);
+    if (!m) return null;
+    const v = m[1].trim();
+    if (/^\d+$/.test(v)) return Math.min(Number(v) * 1000, 15000);
+    const t = Date.parse(v);
+    if (!Number.isNaN(t)) return Math.max(0, Math.min(t - Date.now(), 15000));
+    return null;
+  }
+
   /* ===== ISM-FETCH-PURE-END ===== */
 
   /* ------------------------------------------------------------------ *
@@ -131,7 +219,7 @@
   const ASSET_DELIVERY = "https://assetdelivery.roblox.com/v1/asset/?id=";
   const SETTINGS_KEY = "ism_fetch_settings_v1";
 
-  const DEFAULTS = { site: "", apiKey: "", userId: "", groupId: "" };
+  const DEFAULTS = { site: "", apiKey: "", userId: "", groupId: "", placeId: "", gameId: "" };
 
   function loadSettings() {
     try {
@@ -163,23 +251,29 @@
     });
   }
 
-  /**
-   * Ambil byte aset memakai sesi browser. `withCredentials: true` membuat BROWSER
-   * melampirkan cookie yang sudah ada — script ini tidak pernah membacanya.
-   */
-  async function fetchAssetBytes(id, log) {
-    const url = ASSET_DELIVERY + encodeURIComponent(id);
-    let r = await request({ method: "GET", url, withCredentials: true, responseType: "arraybuffer" });
-    if (r.status === 403) {
-      const token = csrfFromHeaders(r.responseHeaders);
-      if (token) {
-        log("Roblox meminta token CSRF, mencoba ulang…");
-        r = await request({
-          method: "GET", url, withCredentials: true, responseType: "arraybuffer",
-          headers: { "x-csrf-token": token }
-        });
-      }
+  /** Penundaan kecil. */
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  /** Satu permintaan; kalau kena 429, tunggu Retry-After lalu coba sekali lagi. */
+  async function requestWithRetry(opts, log) {
+    let r = await request(opts);
+    if (r.status === 429) {
+      const wait = retryAfterMs(r.responseHeaders) || 3000;
+      if (log) log("Kena batas Roblox (429), tunggu " + Math.round(wait / 1000) + " detik lalu coba lagi…");
+      await sleep(wait);
+      r = await request(opts);
     }
+    return r;
+  }
+
+  /**
+   * Ambil byte dari URL CDN memakai sesi browser.
+   * withCredentials:true -> BROWSER yang melampirkan cookie; script ini tidak pernah membacanya.
+   */
+  async function fetchCdnBytes(url, log) {
+    const r = await requestWithRetry({ method: "GET", url, withCredentials: true, responseType: "arraybuffer" }, log);
     if (!r.status) throw new Error(explainSessionFailure(0, r.error));
 
     const buf = r.response ? new Uint8Array(r.response) : new Uint8Array(0);
@@ -201,6 +295,95 @@
       }
     }
     return bytes;
+  }
+
+  /* --- jalur 1: halaman library (cara V2 menembak pertama) --- */
+  async function resolveFromLibraryPage(id, log) {
+    const r = await requestWithRetry(
+      { method: "GET", url: "https://www.roblox.com/library/" + encodeURIComponent(id) + "/", withCredentials: true },
+      log
+    );
+    if (!r.status) return null;
+    const url = libraryPageCdnUrl(r.responseText);
+    if (!url) return null;
+    log("Isi aset ketemu lewat halaman library: " + url.replace(/\?.*$/, "") + "…");
+    return url;
+  }
+
+  /* --- jalur 2: assetdelivery v1 langsung (ikut redirect ke CDN) --- */
+  async function resolveFromAssetDelivery(id, st, log) {
+    let url = ASSET_DELIVERY + encodeURIComponent(id);
+    if (st && st.placeId) url += "&placeId=" + encodeURIComponent(st.placeId);
+    const r = await requestWithRetry({ method: "GET", url, withCredentials: true, responseType: "arraybuffer" }, log);
+    if (!r.status) throw new Error(explainSessionFailure(0, r.error));
+
+    const buf = r.response ? new Uint8Array(r.response) : new Uint8Array(0);
+    const head = buf.length && buf[0] === 0x7b ? new TextDecoder().decode(buf.slice(0, 2000)) : "";
+    const err = errorFromBody(head) || errorFromBody(r.responseText);
+    if (err) throw new Error(explainSessionFailure(r.status, err.message));
+    if (r.status !== 200) throw new Error(explainSessionFailure(r.status, r.statusText));
+    if (!buf.length) throw new Error("Roblox mengirim balasan kosong untuk aset ini.");
+    return buf;
+  }
+
+  /* --- jalur 3: batch v2, satu-satunya yang memakai cookie + konteks game --- */
+  async function resolveFromBatch(id, st, log) {
+    const requestId = uuidish();
+    const headers = {
+      "content-type": "application/json",
+      ...gameContextHeaders(st && st.placeId, st && st.gameId)
+    };
+    const body = buildBatchBody(id, { requestId, placeId: st && st.placeId, assetType: "Animation" });
+    if (st && st.placeId) log("Sertakan konteks game (Place ID " + st.placeId + ") seperti yang dilakukan aplikasi V2.");
+    const r = await requestWithRetry(
+      { method: "POST", url: "https://assetdelivery.roblox.com/v2/assets/batch", withCredentials: true,
+        headers, data: JSON.stringify(body) }, log
+    );
+    if (!r.status) throw new Error(explainSessionFailure(0, r.error));
+    if (r.status === 401 || r.status === 403) {
+      throw new Error("Sesi Roblox tidak diterima (HTTP " + r.status + "). Buka roblox.com, pastikan masih login, lalu coba lagi.");
+    }
+    let json = null;
+    try { json = JSON.parse(r.responseText); } catch (_) {}
+    if (!json) throw new Error("Jawaban batch tidak bisa dibaca (HTTP " + r.status + ").");
+    const res = parseBatchResponse(json, requestId);
+    if (!res.url) {
+      if (res.accessDenied) {
+        throw new Error("Akunmu sendiri tidak diberi akses ke aset ini oleh pemiliknya.");
+      }
+      throw new Error("Batch tidak memberi lokasi aset: " + (res.error || "sebab tidak jelas"));
+    }
+    log("Isi aset ketemu lewat batch v2.");
+    return res.url;
+  }
+
+  /**
+   * Tiga jalur seperti aplikasi V2, dijalankan berurutan sampai satu berhasil.
+   * Semua permintaan berjalan DI BROWSER-MU dengan sesi yang sudah ada.
+   */
+  async function fetchAssetBytes(id, st, log) {
+    const problems = [];
+
+    try {
+      const cdn = await resolveFromLibraryPage(id, log);
+      if (cdn) return await fetchCdnBytes(cdn, log);
+    } catch (e) { problems.push("halaman library: " + e.message); }
+
+    try {
+      return await resolveFromAssetDelivery(id, st, log);
+    } catch (e) { problems.push("assetdelivery v1: " + e.message); }
+
+    try {
+      const cdn = await resolveFromBatch(id, st, log);
+      if (cdn) return await fetchCdnBytes(cdn, log);
+    } catch (e) { problems.push("batch v2: " + e.message); }
+
+    // semua gagal: tampilkan sebab paling informatif (yang terakhir biasanya paling jelas)
+    const last = problems[problems.length - 1];
+    if (/tidak diberi akses|not authorized/i.test(problems.join(" "))) {
+      throw new Error("Semua jalur gagal. Akunmu sendiri tidak diberi akses ke aset ini — cek asetnya di roblox.com sambil login.");
+    }
+    throw new Error("Semua jalur gagal. " + (last || ""));
   }
 
   function download(bytes, name, log) {
@@ -376,7 +559,7 @@
     const st = loadSettings();
     statusEl.textContent = "mengambil " + id + " …";
     try {
-      const bytes = await fetchAssetBytes(id, log);
+      const bytes = await fetchAssetBytes(id, st, log);
       log("Berhasil mengambil " + (bytes.length / 1024).toFixed(1) + " KB dari Roblox (memakai sesi browser ini).");
       if (mode === "download") {
         download(bytes, safeFileName(id), log);
@@ -402,7 +585,13 @@
     if (userId === null) return;
     const groupId = prompt("Group ID tujuan (boleh dikosongkan):", st.groupId || "");
     if (groupId === null) return;
-    const clean = saveSettings({ site: site.trim(), apiKey: apiKey.trim(), userId: userId.trim(), groupId: groupId.trim() });
+    const placeId = prompt("Place ID game (opsional — isi kalau asetnya dibatasi sebuah game):", st.placeId || "");
+    if (placeId === null) return;
+    const clean = saveSettings({
+      site: site.trim(), apiKey: apiKey.trim(), userId: userId.trim(),
+      groupId: groupId.trim(), placeId: placeId.trim(),
+      gameId: st.gameId || uuidish()
+    });
     log("Pengaturan disimpan di browser ini." + (looksLikeApiKey(clean.apiKey) ? "" : " (Catatan: panjang kunci " + clean.apiKey.length + " karakter — kunci Open Cloud biasanya ~48.)"));
     statusEl.textContent = clean.site ? "siap · " + clean.site : "alamat situs belum diisi";
   }
