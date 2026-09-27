@@ -44,6 +44,9 @@ const cfg = {
   concurrency: Math.max(1, Math.min(6, Number(process.env.CONCURRENCY || 3))),
   jobRateLimit: Math.max(1, Number(process.env.JOB_RATE_LIMIT || 10)), // job per menit per IP
   maxItemsPerJob: Math.max(1, Math.min(500, Number(process.env.MAX_ITEMS || 120))),
+  // Berapa lama menunggu jawaban akhir Roblox setelah upload. Kalau habis, item
+  // TIDAK dianggap gagal — jadi "belum pasti" dan ID-nya dicari di inventaris.
+  pollTimeoutMs: Math.max(1000, Number(process.env.POLL_TIMEOUT_MS || 90000)),
   oauth: {
     clientId: process.env.ROBLOX_OAUTH_CLIENT_ID || "",
     clientSecret: process.env.ROBLOX_OAUTH_CLIENT_SECRET || "",
@@ -54,6 +57,7 @@ const cfg = {
     assetDeliveryBase: process.env.ROBLOX_ASSET_DELIVERY_BASE || undefined,
     oauthBase: process.env.ROBLOX_OAUTH_BASE || undefined,
     usersBase: process.env.ROBLOX_USERS_BASE || undefined,
+    inventoryBase: process.env.ROBLOX_INVENTORY_BASE || undefined,
     // host CDN tambahan (mirror / server tiruan saat pengujian)
     allowedAssetHosts: (process.env.ALLOW_ASSET_HOSTS || "").split(",").map((s) => s.trim()).filter(Boolean)
   }
@@ -175,7 +179,8 @@ function newJob(meta) {
     options: meta.options,
     auth: meta.auth,
     concurrency: meta.concurrency,
-    summary: { total: meta.items.length, done: 0, error: 0, skipped: 0, pending: meta.items.length },
+    createdAtMs: Date.now(),
+    summary: { total: meta.items.length, done: 0, error: 0, skipped: 0, uncertain: 0, pending: meta.items.length },
     clients: new Set(),
     logTail: []
   };
@@ -195,16 +200,158 @@ function emit(job, event) {
   }
 }
 
+/** IP keluar server ini (dipakai untuk menjelaskan kalau Roblox memblokir IP data center). */
+let egressCache = { at: 0, ip: null };
+async function serverEgressIp() {
+  if (Date.now() - egressCache.at < 10 * 60_000) return egressCache.ip;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch("https://api.ipify.org?format=json", { signal: ctrl.signal });
+    clearTimeout(timer);
+    const j = await res.json();
+    egressCache = { at: Date.now(), ip: j && j.ip ? String(j.ip) : null };
+  } catch (_) {
+    egressCache = { at: Date.now(), ip: null };
+  }
+  return egressCache.ip;
+}
+
+/**
+ * Cari ID aset yang mungkin sudah dibuat Roblox, lewat daftar aset publik kreator.
+ * Tidak butuh kredensial, dan tidak mengubah apa pun di akun user.
+ */
+async function tryRecover(job, item) {
+  const target = job.options.target || {};
+  const displayName = item.displayName || (item.source === "file" ? item.fileName : (job.options.namePrefix || "ISM Spoof") + " " + item.id);
+  try {
+    const res = await roblox.recoverNewAsset({
+      userId: target.userId,
+      groupId: target.groupId,
+      displayName,
+      sinceMs: item.uploadStartedAt || job.createdAtMs || Date.now() - 900000
+    });
+    if (res.found) return { found: true, assetId: res.assetId, reason: null };
+    return { found: false, reason: res.supported ? "Belum ada aset dengan nama itu di daftar asetmu — coba Periksa ulang beberapa saat lagi." : res.reason };
+  } catch (err) {
+    return { found: false, reason: "Gagal memeriksa inventaris: " + ((err && err.message) || String(err)) };
+  }
+}
+
+/** Pekerjaan yang masih menunggu konfirmasi ID (untuk diperiksa ulang berkala). */
+const reconcilers = new Map(); // jobId → { job, tries, timer }
+
+function scheduleReconcile(job) {
+  if (reconcilers.has(job.id)) return;
+  const state = { job, tries: 0, timer: null };
+  reconcilers.set(job.id, state);
+  const tick = async () => {
+    state.tries++;
+    const pending = job.items.filter((i) => i.status === "pending-confirm");
+    if (!pending.length || job.cancelled || state.tries > 20) {
+      clearTimeout(state.timer);
+      reconcilers.delete(job.id);
+      emit(job, { type: "job", status: job.status, summary: job.summary });
+      return;
+    }
+    for (const item of pending) {
+      // 1) operasi yang sama
+      if (item.operationId || item.operationPath) {
+        try {
+          const done = await roblox.pollOperation(
+            { operationId: item.operationId, operationPath: item.operationPath },
+            job.auth,
+            { timeoutMs: 4000, intervalMs: 1200 }
+          );
+          item.status = "done";
+          item.newId = done.assetId;
+          item.recovered = true;
+          delete item.error;
+          job.summary.uncertain = Math.max(0, (job.summary.uncertain || 0) - 1);
+          job.summary.done++;
+          emit(job, { type: "item", id: item.id, status: "done", newId: item.newId, recovered: true });
+          emit(job, { type: "log", level: "ok", message: `ID ${item.id} → ${item.newId} (operasi selesai)` });
+          continue;
+        } catch (_) { /* lanjut ke inventaris */ }
+      }
+      // 2) inventaris
+      const rec = await tryRecover(job, item);
+      if (rec.found) {
+        item.status = "done";
+        item.newId = rec.assetId;
+        item.recovered = true;
+        delete item.error;
+        job.summary.uncertain = Math.max(0, (job.summary.uncertain || 0) - 1);
+        job.summary.done++;
+        emit(job, { type: "item", id: item.id, status: "done", newId: item.newId, recovered: true });
+        emit(job, { type: "log", level: "ok", message: `ID ${item.id} → ${item.newId} (dipulihkan dari inventaris)` });
+      }
+    }
+    // perbarui status job kalau semua sudah jelas
+    if (!job.items.some((i) => i.status === "pending-confirm") && !job.summary.error) job.status = "finished";
+    else if (job.summary.error && !job.summary.uncertain) job.status = "finished-with-errors";
+    state.timer = setTimeout(tick, 20000);
+  };
+  state.timer = setTimeout(tick, 15000);
+}
+
+/** Sekali jalan: periksa ulang semua item yang belum pasti. */
+async function reconcileNow(job) {
+  const pending = job.items.filter((i) => i.status === "pending-confirm");
+  let recovered = 0;
+  for (const item of pending) {
+    if (item.operationId || item.operationPath) {
+      try {
+        const done = await roblox.pollOperation(
+          { operationId: item.operationId, operationPath: item.operationPath }, job.auth, { timeoutMs: 6000, intervalMs: 1500 }
+        );
+        item.status = "done"; item.newId = done.assetId; item.recovered = true;
+        delete item.error; delete item.hint;
+        job.summary.uncertain = Math.max(0, (job.summary.uncertain || 0) - 1); job.summary.done++; recovered++;
+        continue;
+      } catch (_) { /* lanjut */ }
+    }
+    const rec = await tryRecover(job, item);
+    if (rec.found) {
+      item.status = "done"; item.newId = rec.assetId; item.recovered = true;
+      delete item.error; delete item.hint;
+      job.summary.uncertain = Math.max(0, (job.summary.uncertain || 0) - 1); job.summary.done++; recovered++;
+    } else if (rec.reason) {
+      item.hint = rec.reason;
+    }
+  }
+  if (!job.items.some((i) => i.status === "pending-confirm")) {
+    job.status = job.summary.error ? "finished-with-errors" : "finished";
+  }
+  return recovered;
+}
+
+/** Susun output siap-tempel dari item yang sudah punya ID baru. */
+function buildOutput(snap) {
+  const pairs = snap.items.filter((i) => i.newId).map((i) => ({ oldId: i.id, newId: i.newId }));
+  return {
+    plugin: formatForPlugin(pairs),
+    plain: formatPlain(pairs),
+    pairs: formatPairs(pairs),
+    count: pairs.length
+  };
+}
+
 function snapshot(job) {
   return {
     id: job.id,
     status: job.status,
     createdAt: job.createdAt,
     summary: job.summary,
+    dashboardUrl: job.options.target && job.options.target.groupId
+      ? "https://create.roblox.com/dashboard/group-creations?activeTab=Animation"
+      : "https://create.roblox.com/dashboard/creations?activeTab=Animation",
     items: job.items.map((it) => ({
-      id: it.id, status: it.status, stage: it.stage || null, newId: it.newId || null, error: it.error || null, hint: it.hint || null,
+      id: it.id, status: it.status, stage: it.stage || null, newId: it.newId || null,
+      error: it.error || null, hint: it.hint || null, httpStatus: it.httpStatus || null,
       bytesLength: it.bytesLength || null, sha256: it.sha256 || null,
       assetType: it.assetType || null, ms: it.ms || null, name: it.name || null,
+      recovered: Boolean(it.recovered), operationId: it.operationId || null,
       creatorId: it.creatorId || null, creatorType: it.creatorType || null
     })),
     options: {
@@ -214,6 +361,20 @@ function snapshot(job) {
       assetType: job.options.assetType
     }
   };
+}
+
+/**
+ * Ambil aset di Roblox: POST hanya sekali per item (kecuali POST-nya sendiri gagal).
+ * Polling dilakukan pada operasi yang sama — tidak pernah meng-upload ulang.
+ */
+async function uploadOnce(job, item, payload) {
+  if (item.uploadOp) return item.uploadOp; // sudah pernah di-POST: jangan ulangi!
+  const up = await roblox.uploadAsset(payload);
+  item.uploadOp = up;
+  item.operationId = up.operationId || null;
+  item.operationPath = up.operationPath || null;
+  item.uploadStartedAt = item.uploadStartedAt || Date.now();
+  return up;
 }
 
 async function processItem(job, item) {
@@ -229,14 +390,14 @@ async function processItem(job, item) {
         item.stage = "upload";
         item.status = "uploading";
         emit(job, { type: "item", id: item.id, status: item.status, attempt });
-        const up = await roblox.uploadAsset({
+        const up = await uploadOnce(job, item, {
           bytes: item.bytes, fileName: item.fileName, assetType: item.assetType,
           displayName: item.displayName, description: opts.description || "Uploaded via ISpooferMotion Web",
           creator: opts.target, auth: job.auth
         });
         item.status = "processing";
         emit(job, { type: "item", id: item.id, status: item.status });
-        const done = await roblox.pollOperation(up, job.auth, { timeoutMs: 90000 });
+        const done = await roblox.pollOperation(up, job.auth, { timeoutMs: cfg.pollTimeoutMs });
         item.newId = done.assetId;
         item.assetType = item.assetType || "Animation";
       } else {
@@ -260,11 +421,12 @@ async function processItem(job, item) {
           bytesLength: dl.bytesLength, sha256: dl.sha256, assetType: item.assetType
         });
 
-        const up = await roblox.uploadAsset({
+        item.displayName = (opts.namePrefix || "ISM Spoof") + " " + item.id;
+        const up = await uploadOnce(job, item, {
           bytes: dl.bytes,
           fileName: `ism-${item.id}.rbxm`,
           assetType: opts.assetType || "Animation",
-          displayName: (opts.namePrefix || "ISM Spoof") + " " + item.id,
+          displayName: item.displayName,
           description: opts.description || `Re-upload dari asset ${item.id} via ISpooferMotion Web`,
           creator: opts.target,
           auth: job.auth
@@ -273,7 +435,7 @@ async function processItem(job, item) {
         item.status = "processing";
         emit(job, { type: "item", id: item.id, status: item.status });
 
-        const done = await roblox.pollOperation(up, job.auth, { timeoutMs: 90000 });
+        const done = await roblox.pollOperation(up, job.auth, { timeoutMs: cfg.pollTimeoutMs });
         item.newId = done.assetId;
       }
 
@@ -285,7 +447,38 @@ async function processItem(job, item) {
       return;
     } catch (err) {
       const re = err instanceof RobloxError ? err : new RobloxError(err.message || String(err));
-      if (attempt < attempts && re.retryable && !job.cancelled) {
+
+      // Timeout / jawaban belum turun: upload-nya biasanya SUDAH jadi. Jangan ulangi
+      // upload (itu bikin aset ganda), tapi tandai "belum pasti" lalu cari ID-nya.
+      if (re.uncertain) {
+        item.status = "pending-confirm";
+        item.stage = item.stage || "upload";
+        item.error = re.message;
+        item.hint = roblox.explainError(re.message) || "Upload sudah diterima Roblox; ID-nya menyusul. Cek Creator Dashboard kalau mau langsung memakainya.";
+        item.ms = now() - t0;
+        emit(job, { type: "item", id: item.id, status: item.status, stage: item.stage, error: item.error, hint: item.hint, ms: item.ms });
+        emit(job, { type: "log", level: "warn", message: `ID ${item.id}: Roblox belum mengirim ID akhir. Upload kemungkinan tetap jadi — aku cari ID-nya di inventaris.` });
+
+        const rec = await tryRecover(job, item);
+        if (rec.found) {
+          item.status = "done";
+          item.newId = rec.assetId;
+          item.recovered = true;
+          delete item.error;
+          delete item.hint;
+          job.summary.uncertain = Math.max(0, (job.summary.uncertain || 0) - 1);
+          job.summary.done++;
+          emit(job, { type: "item", id: item.id, status: "done", newId: item.newId, recovered: true, ms: item.ms });
+          emit(job, { type: "log", level: "ok", message: `ID ${item.id} → ${item.newId} (dipulihkan dari inventaris)` });
+          return;
+        }
+        if (rec.reason) emit(job, { type: "log", level: "warn", message: `ID ${item.id}: ${rec.reason}` });
+        job.summary.uncertain = (job.summary.uncertain || 0) + 1;
+        scheduleReconcile(job);
+        return;
+      }
+
+      if (attempt < attempts && re.retryable && !job.cancelled && !item.uploadOp) {
         emit(job, { type: "log", level: "warn", message: `ID ${item.id} gagal (${re.message}) — coba ulang…` });
         await new Promise((r) => setTimeout(r, 1200));
         continue;
@@ -294,10 +487,13 @@ async function processItem(job, item) {
       item.stage = item.stage || "unknown";
       item.error = re.message;
       item.hint = roblox.explainError(re.message) || null;
+      // kode HTTP dari Roblox (401/403/429/…) supaya bisa dibedakan: butuh login,
+      // diblokir IP, atau kena batas permintaan.
+      item.httpStatus = Number(re.code) || null;
       item.ms = now() - t0;
       job.summary.error++;
       job.summary.pending--;
-      emit(job, { type: "item", id: item.id, status: "error", error: item.error, hint: item.hint, stage: item.stage, ms: item.ms });
+      emit(job, { type: "item", id: item.id, status: "error", error: item.error, hint: item.hint, stage: item.stage, httpStatus: item.httpStatus, ms: item.ms });
       return;
     }
   }
@@ -328,7 +524,12 @@ async function runJob(job) {
     }
     job.status = "cancelled";
   } else {
-    job.status = job.summary.error ? (job.summary.done ? "finished-with-errors" : "failed") : "finished";
+    // "belum pasti" bukan gagal: asetnya biasanya sudah ada di Roblox.
+    job.status = job.summary.error
+      ? (job.summary.done || job.summary.uncertain ? "finished-with-errors" : "failed")
+      : job.summary.uncertain
+        ? "finished-with-uncertain"
+        : "finished";
   }
 
   emit(job, { type: "job", status: job.status, summary: job.summary });
@@ -443,6 +644,8 @@ const server = http.createServer(async (req, res) => {
           apiKey: true
         },
         limits: { maxItems: cfg.maxItemsPerJob, concurrency: cfg.concurrency, maxBytes: roblox.config.maxAssetBytes },
+        egressIp: await serverEgressIp(),
+        userAgents: (roblox.config.userAgents || []).map((u) => String(u).split("/")[0]).slice(0, 5),
         cookieAuth: false,
         note: "Server ini tidak menerima cookie sesi Roblox. Auth hanya Open Cloud API key atau OAuth 2.0."
       });
@@ -597,7 +800,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---------- status & stream ---------- */
-    const jobMatch = p.match(/^\/api\/jobs\/([A-Za-z0-9_-]+)(\/events|\/cancel)?$/);
+    const jobMatch = p.match(/^\/api\/jobs\/([A-Za-z0-9_-]+)(\/events|\/cancel|\/recheck)?$/);
     if (jobMatch) {
       const job = jobs.get(jobMatch[1]);
       if (!job) return json(res, 404, { error: "Job tidak ditemukan atau sudah kedaluwarsa." });
@@ -617,6 +820,18 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      if (jobMatch[2] === "/recheck" && req.method === "POST") {
+        if (!rateLimit(req, "recheck", 20, 60_000)) {
+          return json(res, 429, { error: "rate-limited", message: "Terlalu banyak periksa ulang. Tunggu sebentar." });
+        }
+        const found = await reconcileNow(job);
+        const snap = snapshot(job);
+        snap.output = buildOutput(snap);
+        snap.rechecked = { recovered: found, uncertainLeft: job.summary.uncertain || 0 };
+        log(`job ${job.id}: periksa ulang → ${found} ID dipulihkan, sisa belum pasti ${job.summary.uncertain || 0}`);
+        return json(res, 200, snap);
+      }
+
       if (jobMatch[2] === "/cancel" && req.method === "POST") {
         job.cancelled = true;
         return json(res, 200, { ok: true });
@@ -624,12 +839,7 @@ const server = http.createServer(async (req, res) => {
 
       if (req.method === "GET") {
         const snap = snapshot(job);
-        const pairs = snap.items.filter((i) => i.newId).map((i) => ({ oldId: i.id, newId: i.newId }));
-        snap.output = {
-          plugin: formatForPlugin(pairs),
-          plain: formatPlain(pairs),
-          pairs: formatPairs(pairs)
-        };
+        snap.output = buildOutput(snap);
         return json(res, 200, snap);
       }
     }
@@ -655,11 +865,25 @@ const server = http.createServer(async (req, res) => {
             assetType: dl.assetType, assetTypeId: dl.assetTypeId, ms: now() - t0
           });
         } catch (err) {
-          results.push({ id: it.id, ok: false, error: (err && err.message) || String(err), ms: now() - t0 });
+          const attempts = (err && err.detail && err.detail.attempts) || [];
+          results.push({
+            id: it.id, ok: false,
+            status: Number((err && err.code) || 0) || null,
+            error: (err && err.message) || String(err),
+            tried: attempts.slice(0, 6).map((a) => `${a.endpoint || "cdn"} ${a.ua ? String(a.ua).split("/")[0] : "?"}=${a.status}`),
+            hint: roblox.explainError((err && err.message) || String(err)) || null,
+            ms: now() - t0
+          });
         }
       });
       results.sort((a, b) => Number(a.id) - Number(b.id));
       const okCount = results.filter((r) => r.ok).length;
+      const blocked = results.filter((r) => !r.ok && [401, 403].includes(Number(r.status))).length;
+      const limited = results.filter((r) => !r.ok && Number(r.status) === 429).length;
+      // "dinding" = Roblox menolak permintaan itu sendiri (bukan sekadar asetnya dibatasi)
+      const gatewayBlocked = results.filter(
+        (r) => !r.ok && /invalid authentication data|invalid api key|unauthorized/i.test(String(r.error || ""))
+      ).length;
       return json(res, 200, {
         probe: true,
         checked: results.length,
@@ -667,6 +891,15 @@ const server = http.createServer(async (req, res) => {
         failed: results.length - okCount,
         needsCredentials: false,
         note: "Uji ini hanya mengambil isi aset — tidak ada upload, tidak ada kredensial yang dipakai.",
+        diagnosis: limited
+          ? "Server ini kena batas permintaan Roblox (HTTP 429). Roblox membatasi per-IP, dan IP data center (Railway dll) sering dipakai bersama. Tunggu 1-2 menit lalu ulangi; untuk hasil paling lancar jalankan server ini di komputermu sendiri atau pakai userscript (ambil dari IP-mu)."
+          : gatewayBlocked && okCount === 0
+            ? "Roblox menolak permintaan dari server ini di pintu masuk (bukan soal asetnya). Biasanya karena IP data center diblokir/dibatasi Roblox. Jalankan server ini di komputermu sendiri, atau pakai userscript ism-fetch.user.js yang mengambil dari IP-mu."
+            : gatewayBlocked
+              ? "Sebagian permintaan ditolak di pintu masuk (HTTP 401/403) — server ini kadang dibatasi Roblox. Yang gagal bisa dicoba ulang, atau ambil lewat userscript (dari IP-mu)."
+              : blocked
+                ? "Aset yang gagal memang dibatasi: hanya sesi Roblox yang login boleh mengambil isinya. Kunci API tidak bisa menembusnya. Pakai userscript ism-fetch.user.js (mengambil di browsermu, lalu kirim ke halaman ini), atau tab 'Dari file lokal'."
+                : null,
         results
       });
     }

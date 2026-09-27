@@ -18,12 +18,26 @@ export const DEFAULTS = {
   assetDeliveryBase: "https://assetdelivery.roblox.com",
   oauthBase: "https://apis.roblox.com/oauth/v1",
   usersBase: "https://users.roblox.com",
+  // Daftar aset milik seorang kreator (publik, tanpa kredensial). Dipakai untuk
+  // menemukan kembali aset yang sudah jadi diupload Roblox tapi belum terkonfirmasi.
+  inventoryBase: "https://inventory.roblox.com",
   // Aset publik yang dipakai untuk menguji kunci (read-only, tidak mengubah apa pun)
   probeAssetId: "180435571",
   maxAssetBytes: 20 * 1024 * 1024, // batas 20 MB dari dokumentasi Open Cloud
   userAgent: "ISpooferMotion-Web/1.0 (+https://github.com/ISpooferMotion)",
+  // Roblox menolak sebagian User-Agent dari IP data center. Daftar ini ditiru dari
+  // ISpooferMotion V2 (src-tauri/.../spoofer/download/api.rs) yang mencoba bergilir.
+  userAgents: [
+    "Roblox/WinInet",
+    "RobloxStudio/WinInet",
+    "RobloxApp/WinInet",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "ISpooferMotion-Web/1.0 (+https://github.com/ISpooferMotion)"
+  ],
   allowedAssetHosts: [], // tambahan host yang diizinkan; default hanya host Roblox
-  probeAssetId: "180435571" // aset publik untuk uji fungsi kunci
+  probeAssetId: "180435571", // aset publik untuk uji fungsi kunci
+  inventoryBase: "https://inventory.roblox.com",
+  assetTypeIdAnimation: 24
 };
 
 /** Karakter non-ASCII pertama di sebuah kunci (atau null kalau semua ASCII). */
@@ -297,8 +311,12 @@ export function explainError(message) {
       "Target upload tidak cocok dengan pemilik kunci. User ID tujuan harus sama dengan akun pemilik kunci API (atau pakai Group ID yang kuncinya punya akses)."],
     [/moderat|pending review/i,
       "Aset masuk moderasi Roblox. Cek Creator Dashboard beberapa saat lagi."],
-    [/too many requests|rate limit|quota/i,
-      "Kena batas/kuota Roblox. Tunggu sebentar lalu jalankan ulang."],
+    [/too many requests|rate limit|quota|cdn sibuk.*429/i,
+      "Kena batas permintaan Roblox (429). Roblox membatasi per-IP, dan IP server/data center sering dipakai bersama. Tunggu 1-2 menit lalu ulangi — atau ambil lewat userscript ism-fetch.user.js (jalan dari IP-mu, tidak kena batas ini)."],
+    [/invalid authentication data provided/i,
+      "Roblox menolak permintaan ini di pintu masuk (bukan soal asetnya) — biasanya IP server ini dibatasi Roblox. Coba ulangi; kalau terus terjadi, jalankan server di komputermu sendiri atau pakai userscript ism-fetch.user.js yang mengambil dari IP-mu."],
+    [/gagal mengambil isi aset \(http 403|http 403 dari/i,
+      "Roblox menolak permintaan dari IP server ini (403) walau asetnya publik. Jalankan server di komputermu sendiri, atau pakai userscript ism-fetch.user.js yang mengambil dari IP-mu."],
     [/file size|too large|exceeds|20 ?MB|maximum size/i,
       "File melebihi batas 20 MB per aset."],
     [/assettype|asset type/i,
@@ -358,38 +376,84 @@ export function createRobloxClient(config = {}) {
   }
 
   /* --- 1. resolusi: ID -> daftar lokasi isi aset (TANPA auth) --- */
+  /** Daftar User-Agent yang akan dicoba berurutan. */
+  function userAgentList() {
+    const list = Array.isArray(cfg.userAgents) && cfg.userAgents.length ? cfg.userAgents.slice() : [cfg.userAgent];
+    if (cfg.userAgent && !list.includes(cfg.userAgent)) list.push(cfg.userAgent);
+    return list;
+  }
+
+  /**
+   * Coba satu endpoint dengan beberapa User-Agent bergilir.
+   * Mengembalikan juga riwayat percobaan supaya kegagalan bisa dijelaskan apa adanya
+   * (diblokir IP vs kena batas vs butuh login).
+   */
+  async function fetchWithAgents(url, init, { acceptStatuses = [] } = {}) {
+    const attempts = [];
+    let last = null;
+    for (const ua of userAgentList()) {
+      let res;
+      try {
+        res = await doFetch(url, { ...init, headers: { ...(init.headers || {}), "user-agent": ua } });
+      } catch (err) {
+        attempts.push({ ua, status: 0, message: err && err.message ? err.message : String(err) });
+        last = { res: null, ua, error: err };
+        continue;
+      }
+      attempts.push({ ua, status: res.status });
+      last = { res, ua };
+      // berhasil, atau status yang memang kita terima (mis. 302 → baca Location)
+      if (res.ok || acceptStatuses.includes(res.status)) return { ...last, attempts };
+      // hanya status "dinding" yang layak dicoba dengan UA lain
+      if (![401, 403, 429].includes(res.status)) return { ...last, attempts };
+      await sleep(150);
+    }
+    return { ...(last || { res: null, ua: null }), attempts };
+  }
+
   async function resolveAsset(assetId, { placeId } = {}) {
     const id = String(assetId).trim();
     if (!/^\d{4,}$/.test(id)) {
       throw new RobloxError("Bukan asset ID yang valid: " + id, { code: 400 });
     }
+    const attemptsAll = [];
 
     // jalur utama: v2 (jawabannya JSON berisi lokasi CDN)
     const v2 = new URL(`${cfg.assetDeliveryBase.replace(/\/$/, "")}/v2/assetId/${id}`);
     if (placeId) v2.searchParams.set("placeId", String(placeId));
 
-    let res = await doFetch(v2.toString(), {
-      headers: { accept: "application/json", "user-agent": cfg.userAgent },
+    const v2Try = await fetchWithAgents(v2.toString(), {
+      headers: { accept: "application/json" },
       redirect: "follow"
     });
-    let body = await res.json().catch(() => null);
+    attemptsAll.push(...v2Try.attempts.map((a) => ({ ...a, endpoint: "v2/assetId" })));
+    const res = v2Try.res;
+    let body = res ? await res.json().catch(() => null) : null;
 
-    const bodyErr = detectBodyError(body, res.status);
+    const bodyErr = body
+      ? detectBodyError(body, res.status)
+      : new RobloxError("Tidak bisa menghubungi assetdelivery: " + (v2Try.error && v2Try.error.message ? v2Try.error.message : "tidak ada balasan"), { code: 502 });
+    // Roblox sering mengirim {"errors":[{"code":0,…}]} — kode HTTP-nya yang informatif
+    // (401/403/429). Simpan supaya UI bisa membedakan butuh login vs diblokir vs kena batas.
+    if (bodyErr && !Number(bodyErr.code)) bodyErr.code = res.status;
     if (bodyErr) {
       // fallback: v1 mengembalikan redirect (302) ke CDN
       const v1 = new URL(`${cfg.assetDeliveryBase.replace(/\/$/, "")}/v1/asset`);
       v1.searchParams.set("id", id);
       if (placeId) v1.searchParams.set("placeId", String(placeId));
-      const res1 = await doFetch(v1.toString(), {
-        headers: { accept: "*/*", "user-agent": cfg.userAgent },
-        redirect: "manual"
-      });
+      const v1Try = await fetchWithAgents(v1.toString(), { headers: { accept: "*/*" }, redirect: "manual" }, { acceptStatuses: [302, 301, 303, 307, 308] });
+      attemptsAll.push(...v1Try.attempts.map((a) => ({ ...a, endpoint: "v1/asset" })));
+      const res1 = v1Try.res;
+      if (!res1) {
+        throw new RobloxError("Tidak bisa menghubungi assetdelivery (v1) sama sekali.", { code: 502, detail: { attempts: attemptsAll } });
+      }
       const loc = res1.headers.get("location");
       if (loc) return { assetId: id, locations: [keepLocationAsIs(new URL(loc, v1).toString())], assetTypeId: null };
       if (res1.status === 200) {
         const bytes = new Uint8Array(await res1.arrayBuffer());
         return { assetId: id, inline: bytes, locations: [], assetTypeId: null };
       }
+      bodyErr.detail = { ...(bodyErr.detail || {}), attempts: attemptsAll };
       throw bodyErr;
     }
 
@@ -423,17 +487,25 @@ export function createRobloxClient(config = {}) {
       const url = keepLocationAsIs(location);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await doFetch(url, {
-            headers: { accept: "*/*", "user-agent": cfg.userAgent },
-            redirect: "follow"
-          });
+          const tried = await fetchWithAgents(url, { headers: { accept: "*/*" }, redirect: "follow" });
+          const res = tried.res;
+          if (!res) {
+            lastError = new RobloxError("Tidak bisa menghubungi CDN Roblox: " + (tried.error && tried.error.message ? tried.error.message : "tanpa balasan"), { code: 502, retryable: true });
+            await sleep(400 * (attempt + 1));
+            continue;
+          }
           if (res.status === 429 || res.status >= 500) {
-            lastError = new RobloxError("CDN sibuk (HTTP " + res.status + ")", { code: res.status, retryable: true });
+            lastError = new RobloxError(
+              "CDN sibuk (HTTP " + res.status + ")" + (res.status === 429 ? " — server ini kena batas permintaan Roblox, coba lagi sebentar lagi atau pakai tab 'Dari file lokal'." : ""),
+              { code: res.status, retryable: true }
+            );
             await sleep(400 * (attempt + 1));
             continue;
           }
           if (!res.ok) {
-            lastError = new RobloxError("Gagal mengambil isi aset (HTTP " + res.status + ")", { code: res.status });
+            lastError = new RobloxError(
+              "Gagal mengambil isi aset (HTTP " + res.status + " dari " + (tried.ua || "?") + ")", { code: res.status }
+            );
             break;
           }
           const raw = new Uint8Array(await res.arrayBuffer());
@@ -543,9 +615,17 @@ export function createRobloxClient(config = {}) {
       }
       await sleep(intervalMs);
     }
-    throw new RobloxError("Upload belum selesai setelah " + Math.round(timeoutMs / 1000) + " detik. Cek Creator Dashboard.", {
-      code: "timeout", retryable: true
-    });
+    // PENTING: jangan pernah meng-upload ulang karena timeout — upload pertama
+    // biasanya SUDAH jadi di Roblox, cuma jawabannya belum turun. Yang benar:
+    // tandai "belum pasti", lalu lanjutkan memeriksa operasi yang sama.
+    const err = new RobloxError(
+      "Roblox belum memberi jawaban akhir setelah " + Math.round(timeoutMs / 1000) +
+        " detik. Upload-nya biasanya tetap jadi — ID-nya menyusul.",
+      { code: "timeout" }
+    );
+    err.uncertain = true;
+    err.operation = { operationId: op.operationId || null, operationPath: op.operationPath || null };
+    throw err;
   }
 
   /* --- diagnosa: periksa kunci API tanpa meng-upload apa pun --- */
@@ -935,6 +1015,76 @@ export function createRobloxClient(config = {}) {
     };
   }
 
+  /**
+   * Daftar aset terbaru milik seorang kreator (animasi = tipe 24).
+   * Tanpa kredensial apa pun — memakai inventaris publik Roblox.
+   * Untuk target grup, Roblox tidak menyediakan jalur publik: kembalikan supported:false.
+   */
+  async function listCreatorAssets({ userId, groupId, assetTypeId = 24, limit = 25 } = {}) {
+    if (!userId) {
+      return {
+        supported: false,
+        reason: groupId
+          ? "Roblox tidak menyediakan daftar aset publik untuk grup, jadi pemulihan otomatis tidak bisa dipakai untuk target grup."
+          : "User ID/Group ID tujuan belum diisi."
+      };
+    }
+    const base = cfg.inventoryBase.replace(/\/$/, "");
+    const url = `${base}/v2/users/${encodeURIComponent(userId)}/inventory/${assetTypeId}?limit=${limit}&sortOrder=Desc`;
+    const tried = await fetchWithAgents(url, { headers: { accept: "application/json" } });
+    const res = tried.res;
+    if (!res) {
+      throw new RobloxError(
+        "Tidak bisa membaca daftar aset kreator: " + (tried.error && tried.error.message ? tried.error.message : "tidak ada balasan"),
+        { code: 502 }
+      );
+    }
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = (json && json.errors && json.errors[0] && json.errors[0].message) || "HTTP " + res.status;
+      throw new RobloxError("Daftar aset kreator ditolak: " + msg, { code: res.status });
+    }
+    const items = (json && Array.isArray(json.data) ? json.data : []).map((x) => ({
+      assetId: x.assetId != null ? String(x.assetId) : null,
+      name: x.assetName || null,
+      created: x.created || null
+    })).filter((x) => x.assetId);
+    return { supported: true, items };
+  }
+
+  /** Bandingkan nama aset (abaikan besar-kecil huruf, spasi berlebih, ekstensi file). */
+  function sameAssetName(a, b) {
+    const norm = (v) =>
+      String(v == null ? "" : v)
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .replace(/\.(rbxm|rbxmx|rbx|rbxlx?)$/i, "");
+    const na = norm(a);
+    const nb = norm(b);
+    if (!na || !nb) return false;
+    return na === nb || na.startsWith(nb) || nb.startsWith(na);
+  }
+
+  /**
+   * Cari kembali aset yang baru saja dibuat: cocokkan nama + waktu pembuatan.
+   * `sinceMs` = waktu kita mulai meng-upload, jadi aset lama tidak ikut tertarik.
+   */
+  async function recoverNewAsset({ userId, groupId, displayName, sinceMs, assetTypeId = 24, limit = 25 } = {}) {
+    const list = await listCreatorAssets({ userId, groupId, assetTypeId, limit });
+    if (!list.supported) return { found: false, ...list };
+    const floor = Number(sinceMs || 0) - 120000; // toleransi 2 menit (jam server bisa beda tipis)
+    const candidates = list.items.filter((it) => {
+      if (!sameAssetName(it.name, displayName)) return false;
+      if (!it.created) return true;
+      const t = Date.parse(it.created);
+      return Number.isNaN(t) ? true : t >= floor;
+    });
+    if (!candidates.length) return { found: false, supported: true, scanned: list.items.length };
+    const newest = candidates.sort((a, b) => Date.parse(b.created || 0) - Date.parse(a.created || 0))[0];
+    return { found: true, supported: true, assetId: newest.assetId, name: newest.name, created: newest.created, scanned: list.items.length };
+  }
+
   return {
     config: cfg,
     resolveAsset,
@@ -945,6 +1095,9 @@ export function createRobloxClient(config = {}) {
     checkKey,
     normalizeApiKey,
     classifyCredential,
+    listCreatorAssets,
+    recoverNewAsset,
+    sameAssetName,
     firstNonAscii,
     explainError,
     downloadAsset,

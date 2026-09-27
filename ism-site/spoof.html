@@ -123,6 +123,10 @@
   .errhint .inline{display:inline-block;margin-top:4px;padding:2px 8px;font:600 11px/1.6 var(--mono);border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;cursor:pointer}
   .cred{margin-top:8px;font:11.8px/1.6 var(--mono);color:var(--mut-2)}
   .cred.bad{color:#ffb3b3}
+  .st.pending-confirm{background:rgba(251,191,36,.14);color:#fde68a;border:1px solid rgba(251,191,36,.35)}
+  .sums{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  @media(max-width:640px){.sums{grid-template-columns:repeat(3,1fr)}}
+  .dashlink{display:inline-block;margin-top:4px;color:#5eead4;text-decoration:underline;font-size:11.6px}
   @media(max-width:1000px){.cols{grid-template-columns:1fr}}
 
   /* ---- Tema resmi ISpooferMotion (token dari ISM-Library -> packages/ui/theme/ism-library.css) ----
@@ -309,6 +313,7 @@ https://www.roblox.com/library/1234567893/apa-pun
       <div class="row">
         <button class="btn primary" id="runBtn" type="button" disabled>Jalankan Spoofer</button>
         <button class="btn" id="probeBtn" type="button" disabled>Uji ambil saja (tanpa upload)</button>
+        <button class="btn ghost" id="recheckBtn" type="button" title="Periksa operasi &amp; inventaris untuk item yang belum pasti">Periksa ulang hasil</button>
         <button class="btn danger hide" id="cancelBtn" type="button">Batalkan</button>
       </div>
       <p class="hint" id="runHint">Isi daftar ID dan tujuan upload dulu.</p>
@@ -331,6 +336,7 @@ https://www.roblox.com/library/1234567893/apa-pun
         <div><div class="k">Total</div><div class="v" id="sTotal">0</div></div>
         <div><div class="k">Selesai</div><div class="v" id="sDone" style="color:var(--green)">0</div></div>
         <div><div class="k">Gagal</div><div class="v" id="sErr" style="color:var(--red)">0</div></div>
+        <div><div class="k">Belum pasti</div><div class="v" id="sUncertain" style="color:var(--amber)">0</div></div>
         <div><div class="k">Sisa</div><div class="v" id="sLeft">0</div></div>
       </div>
       <div class="tblwrap">
@@ -501,7 +507,7 @@ https://www.roblox.com/library/1234567893/apa-pun
   }
 
   /* ---------------- render tabel ---------------- */
-  var STATUS_LABEL = { pending: "menunggu", fetching: "mengambil", uploading: "mengunggah", processing: "diproses", done: "selesai", error: "gagal", skipped: "dilewati" };
+  var STATUS_LABEL = { pending: "menunggu", fetching: "mengambil", uploading: "mengunggah", processing: "diproses", done: "selesai", error: "gagal", skipped: "dilewati", "pending-confirm": "belum pasti" };
   var STAGE_LABEL = { fetch: "tahap: ambil isi (tanpa kunci)", upload: "tahap: upload (memakai kunci)" };
   function renderTable() {
     var rows = $("#rows");
@@ -509,10 +515,16 @@ https://www.roblox.com/library/1234567893/apa-pun
     rows.innerHTML = state.items.map(function (it) {
       var badge = '<span class="st ' + it.status + '">' + (STATUS_LABEL[it.status] || it.status) + "</span>";
       var nid = it.newId
-        ? '<a href="https://www.roblox.com/library/' + it.newId + '" target="_blank" rel="noopener">' + it.newId + "</a>"
+        ? '<a href="https://www.roblox.com/library/' + it.newId + '" target="_blank" rel="noopener">' + it.newId + "</a>" +
+          (it.recovered ? ' <span class="errhint" style="color:#9ff0c0">(ID dipulihkan otomatis)</span>' : "")
+        : it.status === "pending-confirm"
+        ? '<span class="errhint" style="color:#fde68a">ID menyusul \u2014 upload kemungkinan sudah jadi</span>' +
+          ' <button type="button" class="inline" data-recheck="1">Periksa ulang</button>' +
+          ' <a class="dashlink" target="_blank" rel="noopener" href="https://create.roblox.com/dashboard/creations?activeTab=Animation">buka dashboard</a>'
         : (it.error
           ? '<span title="' + esc(it.error) + '" style="color:#fecaca;cursor:help">' + esc(it.error.slice(0, 44)) + (it.error.length > 44 ? "\u2026" : "") + "</span>" +
             (it.stage ? '<span class="errhint">' + esc(STAGE_LABEL[it.stage] || ("tahap: " + it.stage)) + "</span><br>" : "") +
+            (it.httpStatus ? '<span class="errhint">HTTP ' + esc(String(it.httpStatus)) + (Number(it.httpStatus) === 429 ? " (batas permintaan Roblox)" : Number(it.httpStatus) === 403 ? " (ditolak/diblokir)" : "") + "</span><br>" : "") +
             (it.hint
               ? '<span class="errhint">\u21b3 ' + esc(it.hint) +
                 (/file lokal/i.test(it.hint) ? ' <button type="button" class="inline" data-goto-file="1">buka tab Dari file lokal</button>' : "") +
@@ -529,6 +541,7 @@ https://www.roblox.com/library/1234567893/apa-pun
     $("#sDone").textContent = s.done;
     $("#sErr").textContent = s.error;
     $("#sLeft").textContent = Math.max(0, s.pending);
+    if ($("#sUncertain")) $("#sUncertain").textContent = s.uncertain || 0;
     var pct = s.total ? Math.round(((s.done + s.error + s.skipped) / s.total) * 100) : 0;
     $("#bar").style.width = pct + "%";
   }
@@ -613,7 +626,7 @@ https://www.roblox.com/library/1234567893/apa-pun
       if (d.type === "item") {
         var it = state.items.filter(function (x) { return x.id === d.id; })[0];
         if (!it) { it = { id: d.id }; state.items.push(it); }
-        ["status", "stage", "newId", "error", "hint", "bytesLength", "sha256", "assetType", "ms"].forEach(function (k) { if (d[k] != null) it[k] = d[k]; });
+        ["status", "stage", "newId", "error", "hint", "httpStatus", "bytesLength", "sha256", "assetType", "ms"].forEach(function (k) { if (d[k] != null) it[k] = d[k]; });
         renderTable();
         if (d.status === "done") logLine("ID " + d.id + " → " + d.newId + (d.sha256 ? "  (sha256 " + d.sha256.slice(0, 10) + "…)" : ""), "ok");
         if (d.status === "error") {
@@ -621,6 +634,8 @@ https://www.roblox.com/library/1234567893/apa-pun
           if (d.hint) logLine("   sebab: " + d.hint, "warn");
         }
         if (d.status === "fetching") logLine("ID " + d.id + " · mengambil isi aset…");
+        if (d.status === "pending-confirm") logLine("ID " + d.id + " · Roblox belum mengirim ID akhir (upload kemungkinan sudah jadi)", "warn");
+        if (d.status === "done" && d.recovered) logLine("ID " + d.id + " → " + d.newId + "  (ID dipulihkan otomatis)", "ok");
         return;
       }
       if (d.type === "log") { logLine(d.message, d.level === "warn" ? "warn" : d.level === "err" ? "err" : ""); return; }
@@ -637,6 +652,17 @@ https://www.roblox.com/library/1234567893/apa-pun
     };
   }
 
+  /* Satu tempat untuk memasang snapshot job ke UI (dipakai polling, finishJob, recheck). */
+  function applySnapshot(body) {
+    if (!body) return;
+    if (body.items) { state.items = body.items; renderTable(); }
+    if (body.summary) renderSummary(body.summary);
+    if (body.output) {
+      state.output = { plugin: body.output.plugin, plain: body.output.plain, pairs: body.output.pairs };
+      $("#output").value = state.output[state.fmt] || "";
+    }
+  }
+
   /* Cadangan kalau SSE diblokir atau di-buffer proxy (umum di reverse proxy/PaaS). */
   function startPolling() {
     if (state.poll || !state.jobId) return;
@@ -646,13 +672,7 @@ https://www.roblox.com/library/1234567893/apa-pun
       ticks++;
       api("/api/jobs/" + state.jobId).then(function (r) {
         if (!r.ok) return;
-        state.items = r.body.items;
-        renderTable();
-        renderSummary(r.body.summary);
-        if (r.body.output) {
-          state.output = { plugin: r.body.output.plugin, plain: r.body.output.plain, pairs: r.body.output.pairs };
-          $("#output").value = state.output[state.fmt] || "";
-        }
+        applySnapshot(r.body);
         var st = r.body.status;
         if (st && st !== "running" && st !== "queued") {
           clearInterval(state.poll);
@@ -666,20 +686,20 @@ https://www.roblox.com/library/1234567893/apa-pun
 
   function finishJob(status) {
     if (state.poll) { clearInterval(state.poll); state.poll = null; }
-    setJobState("job " + status + " · selesai");
-    logLine("job selesai: " + status, status === "finished" ? "ok" : "warn");
+    setJobState("job " + status);
+    if (status === "finished-with-uncertain") {
+      logLine("job selesai — ada item yang belum pasti: upload-nya kemungkinan sudah jadi di Roblox, ID-nya menyusul.", "warn");
+      logLine("Tekan \"Periksa ulang hasil\" beberapa saat lagi, atau buka Creator Dashboard → Item pengembangan.", "warn");
+    } else {
+      logLine("job selesai: " + status, status === "finished" ? "ok" : "warn");
+    }
     state.running = false;
     $("#cancelBtn").className = "btn danger hide";
     refreshRun();
     if (state.es) state.es.close();
     api("/api/jobs/" + state.jobId).then(function (r) {
       if (!r.ok) return;
-      state.items = r.body.items;
-      renderTable(); renderSummary(r.body.summary);
-      if (r.body.output) {
-        state.output = { plugin: r.body.output.plugin, plain: r.body.output.plain, pairs: r.body.output.pairs };
-        $("#output").value = state.output[state.fmt] || "";
-      }
+      applySnapshot(r.body);
     });
   }
 
@@ -735,7 +755,8 @@ https://www.roblox.com/library/1234567893/apa-pun
       if (!r.ok) { logLine("uji gagal: " + (r.body.error || r.status), "err"); setJobState("uji gagal"); return; }
       state.items = r.body.results.map(function (x) {
         return {
-          id: x.id, status: x.ok ? "done" : "error",
+          id: x.id, status: x.ok ? "done" : "error", stage: "fetch",
+          httpStatus: x.ok ? 200 : x.status || null,
           bytesLength: x.bytesLength || null, sha256: x.sha256 || null,
           ms: x.ms, error: x.ok ? null : x.error, newId: null, probe: true
         };
@@ -746,8 +767,10 @@ https://www.roblox.com/library/1234567893/apa-pun
       setJobState("uji selesai · tanpa upload");
       logLine(r.body.ok + " dari " + r.body.checked + " ID bisa ditarik isinya (" +
         Math.round((r.body.ok / r.body.checked) * 100) + "%)", r.body.ok ? "ok" : "warn");
+      if (r.body.diagnosis) logLine("SEBAB: " + r.body.diagnosis, "err");
       r.body.results.filter(function (x) { return !x.ok; }).slice(0, 6).forEach(function (x) {
-        logLine("ID " + x.id + " tidak bisa ditarik: " + x.error, "warn");
+        logLine("ID " + x.id + " tidak bisa ditarik: HTTP " + (x.status || "?") + " " + x.error +
+          (x.tried && x.tried.length ? "   [percobaan: " + x.tried.join(", ") + "]" : ""), "warn");
       });
       logLine("ID yang gagal di sini tetap bisa diproses lewat tab \"Dari file lokal\".", "");
     }, function () {
@@ -808,8 +831,26 @@ https://www.roblox.com/library/1234567893/apa-pun
     refreshRun();
   }
 
+  /* ---- periksa ulang: tanya operasi + inventaris untuk item yang belum pasti ---- */
+  function recheck() {
+    if (!state.jobId) { logLine("belum ada job untuk diperiksa", "warn"); return; }
+    logLine("memeriksa ulang item yang belum pasti (operasi Roblox + daftar asetmu)…");
+    api("/api/jobs/" + state.jobId + "/recheck", { method: "POST", body: "{}" }).then(function (r) {
+      if (!r.ok) { logLine("periksa ulang gagal: " + ((r.body && r.body.message) || r.status), "err"); return; }
+      applySnapshot(r.body);
+      var rec = (r.body.rechecked && r.body.rechecked.recovered) || 0;
+      logLine(rec ? ("periksa ulang: " + rec + " ID berhasil dipulihkan") : "periksa ulang: belum ada ID baru yang bisa dipulihkan",
+        rec ? "ok" : "warn");
+      if (r.body.rechecked && r.body.rechecked.uncertainLeft) {
+        logLine("masih " + r.body.rechecked.uncertainLeft + " item belum pasti \u2014 tunggu sebentar lalu periksa ulang lagi, atau buka dashboard.", "warn");
+      }
+    }, function () { logLine("periksa ulang gagal: tidak bisa menghubungi server", "err"); });
+  }
+  $("#recheckBtn").addEventListener("click", function () { recheck(); });
+
   document.addEventListener("click", function (e) {
     var t = e.target;
+    if (t && t.getAttribute && t.getAttribute("data-recheck")) { recheck(); return; }
     if (t && t.getAttribute && t.getAttribute("data-goto-file")) {
       setTab("file");
       var drop = $("#drop");

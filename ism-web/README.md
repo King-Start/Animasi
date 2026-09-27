@@ -60,6 +60,7 @@ Server yang sama juga menyajikan seluruh situs di `http://localhost:8787/`
 | `CONCURRENCY` | `3` | job diproses paralel (1–6) |
 | `MAX_ITEMS` | `120` | batas jumlah ID per job (1–500) |
 | `JOB_RATE_LIMIT` | `10` | job per menit per IP |
+| `POLL_TIMEOUT_MS` | `90000` | batas tunggu jawaban akhir upload; lewat batas → item `belum pasti` (tidak di-upload ulang) |
 | `ALLOWED_ORIGINS` | — | daftar origin CORS (mis. kalau UI di-host di GitHub Pages) |
 | `ALLOW_ASSET_HOSTS` | — | host CDN tambahan (khusus dev/mirror; default hanya host Roblox) |
 | `ROBLOX_OAUTH_CLIENT_ID` / `_SECRET` | — | mengaktifkan tombol login OAuth 2.0 |
@@ -120,7 +121,7 @@ curl -s localhost:8787/api/jobs -H 'content-type: application/json' -d '{
 node ism-web/tests/api.test.mjs
 ```
 
-175 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
+210 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
 
 - alur lengkap ID → byte → upload → ID baru, termasuk upload ke grup dan operasi async
 - **bukti byte identik**: SHA-256 byte yang diterima endpoint upload dibandingkan dengan byte dari CDN
@@ -132,6 +133,13 @@ node ism-web/tests/api.test.mjs
 - path traversal, rate limit, kebocoran kunci di respons/log
 - **parameter `?encoding=` di URL CDN harus dipertahankan** — tanpa itu CDN Roblox menjawab
   HTTP 403 (bug ini ketemu saat pengujian terhadap Roblox asli, dan sekarang dijaga test)
+- **timeout upload tidak boleh meng-upload ulang** — satu item = paling banyak satu POST.
+  Kalau Roblox tidak memberi jawaban akhir, item jadi `pending-confirm` ("belum pasti"),
+  bukan gagal, dan ID-nya dicari di daftar aset kreator (`recoverNewAsset`)
+- **periksa ulang** (`POST /api/jobs/{id}/recheck`) memulihkan ID yang menyusul, plus
+  laporan `rechecked: { recovered, uncertainLeft }`
+- target grup tetap jujur: Roblox tidak punya daftar aset grup publik, jadi item dibiarkan
+  `pending-confirm` dengan saran cek dashboard (tidak diklaim gagal, tidak diklaim selesai)
 
 ---
 

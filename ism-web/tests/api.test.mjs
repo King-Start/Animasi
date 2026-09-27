@@ -42,6 +42,13 @@ const seen = {
   tokenExchange: null,  // body params
   failures: {},         // penghitung untuk skenario gagal
   cdnRequests: [],      // URL persis yang diminta ke CDN
+  uaSeen: [],           // User-Agent yang diterima mock (untuk uji rotasi)
+  uaBlocked: false,     // kalau true: UA berisi "ISpooferMotion" dijawab 403
+  uaBlockAll: false,    // kalau true: semua UA dijawab 403 (tiru IP diblokir Roblox)
+  neverConfirm: false,  // kalau true: operasi bernama khusus tidak pernah selesai
+  inventoryItems: [],   // isi daftar aset kreator (untuk uji pemulihan ID)
+  inventoryDenied: false,
+  inventory: [],        // percobaan membaca inventaris
   introspect: [],       // kunci yang dikirim ke endpoint introspect
   probe: []             // uji fungsi kunci (asset-read / user-read)
 };
@@ -98,7 +105,16 @@ const mockServer = http.createServer(async (req, res) => {
     res.end(data);
   };
 
-  /* --- asset delivery v2 --- */
+  /* --- rotasi User-Agent: tiru Roblox yang menolak UA tak dikenal dari IP data center --- */
+  {
+    const ua = String(req.headers["user-agent"] || "");
+    seen.uaSeen.push({ path: url.pathname, ua });
+    if ((seen.uaBlockAll || (seen.uaBlocked && /ISpooferMotion/i.test(ua))) && url.pathname.startsWith("/v2/assetId/")) {
+      return send(403, { errors: [{ code: 0, message: "Invalid authentication data provided" }] });
+    }
+  }
+
+  /* --- asset delivery v2 (lokasi CDN) --- */
   let m = url.pathname.match(/^\/v2\/assetId\/(\d+)$/);
   if (m) {
     const id = m[1];
@@ -169,7 +185,8 @@ const mockServer = http.createServer(async (req, res) => {
         return send(429, { errors: [{ code: 429, message: "Too many requests" }] }, { "retry-after": "0" });
       }
     }
-    const opId = "op-" + seen.uploads.length;
+    // seen.neverConfirm: operasi ini sengaja tidak pernah selesai (tiru pollOperation timeout).
+    const opId = "op-" + seen.uploads.length + (seen.neverConfirm ? "-slow" : "");
     return send(200, { path: "/assets/v1/operations/" + opId, operationId: opId, done: false });
   }
 
@@ -177,6 +194,10 @@ const mockServer = http.createServer(async (req, res) => {
   m = url.pathname.match(/^\/assets\/v1\/operations\/(.+)$/);
   if (m) {
     const opId = m[1];
+    // Operasi yang "lambat": Roblox belum pernah memberi jawaban akhir.
+    if (seen.neverConfirm && (opId === "op-never" || opId.endsWith("-slow"))) {
+      return send(200, { path: url.pathname, operationId: opId, done: false });
+    }
     const key = seen.uploads[Number(opId.split("-")[1]) - 1];
     const idx = (seen.failures["poll:" + opId] = (seen.failures["poll:" + opId] || 0) + 1);
     if (opId === "op-gagal") {
@@ -226,6 +247,17 @@ const mockServer = http.createServer(async (req, res) => {
       });
     }
     return send(401, { code: 16, message: "API Key not found" });
+  }
+
+  /* --- inventaris publik kreator (dipakai untuk memulihkan ID) --- */
+  m = url.pathname.match(/^\/v2\/users\/(\d+)\/inventory\/(\d+)$/);
+  if (m) {
+    seen.inventory.push({ userId: m[1], assetTypeId: m[2] });
+    if (seen.inventoryDenied) return send(403, { errors: [{ code: 3, message: "Insufficient permission." }] });
+    const list = (seen.inventoryItems || []).map((x) => ({
+      assetId: Number(x.assetId), assetName: x.name, created: x.created, userAssetId: 1
+    }));
+    return send(200, { previousPageCursor: null, nextPageCursor: null, data: list });
   }
 
   /* --- uji fungsi kunci: baca aset (jalur auth yang sama dengan upload) --- */
@@ -290,9 +322,11 @@ const child = spawn(process.execPath, [SERVER], {
     ROBLOX_ASSET_DELIVERY_BASE: MOCK,
     ROBLOX_OAUTH_BASE: MOCK + "/oauth/v1",
     ROBLOX_USERS_BASE: MOCK,
+    ROBLOX_INVENTORY_BASE: MOCK,
     ROBLOX_OAUTH_CLIENT_ID: "client-uji",
     ROBLOX_OAUTH_CLIENT_SECRET: "secret-uji",
     ALLOW_ASSET_HOSTS: "127.0.0.1",
+    POLL_TIMEOUT_MS: "2500", // cepat untuk uji: tiru Roblox yang tidak menjawab
     JOB_RATE_LIMIT: "100",
     CONCURRENCY: "2",
     MAX_ITEMS: "10"
@@ -646,6 +680,155 @@ heading("2e. Uji fungsi kunci + lapisan bentuk kunci");
     JSON.stringify(jwtRes.body.findings.map((f) => f.message)));
 }
 
+heading("2g. Rotasi User-Agent & status HTTP yang terlihat");
+{
+  // Kalau UA kita diblokir tapi UA ala klien Roblox diterima, pengambilan harus tetap berhasil.
+  seen.uaSeen.length = 0;
+  seen.uaBlocked = true;
+  const probe = await callJson("/api/probe", { method: "POST", body: JSON.stringify({ input: "180435571" }) });
+  ok("UA kita diblokir mock → pengambilan tetap berhasil lewat UA lain",
+    probe.body.ok === 1, JSON.stringify(probe.body.results));
+  const uas = seen.uaSeen.map((x) => x.ua);
+  ok("mock melihat percobaan memakai UA ala klien Roblox",
+    uas.some((u) => /Roblox\/WinInet|RobloxStudio\/WinInet|RobloxApp\/WinInet/.test(u)),
+    JSON.stringify(uas.slice(0, 8)));
+  ok("pengambilan tidak bergantung pada UA milik kita sendiri",
+    !uas.includes("ISpooferMotion-Web/1.0 (+https://github.com/ISpooferMotion)"), JSON.stringify(uas.slice(0, 8)));
+  seen.uaBlocked = false;
+
+  // Semua UA diblokir → status HTTP aslinya harus sampai ke UI, plus diagnosis.
+  seen.uaSeen.length = 0;
+  seen.uaBlockAll = true;
+  const allBlocked = await callJson("/api/probe", { method: "POST", body: JSON.stringify({ input: "180435571" }) });
+  ok("semua UA diblokir → gagal dengan status 403", allBlocked.body.results[0].status === 403,
+    JSON.stringify(allBlocked.body.results[0]));
+  ok("riwayat percobaan ikut dikirim (endpoint + UA + status)",
+    Array.isArray(allBlocked.body.results[0].tried) && allBlocked.body.results[0].tried.length >= 2,
+    JSON.stringify(allBlocked.body.results[0].tried));
+  ok("diagnosis menyebut IP server diblokir (semua gagal = dinding, bukan aset)",
+    /IP data center|komputermu|userscript/i.test(String(allBlocked.body.diagnosis)), String(allBlocked.body.diagnosis));
+
+  // campuran: satu ID bisa diambil, satu aset dibatasi → diagnosis tidak boleh menyalahkan IP
+  seen.uaBlockAll = false;
+  const mixed = await callJson("/api/probe", { method: "POST", body: JSON.stringify({ input: "180435571\n555555555" }) });
+  ok("campuran sukses + aset dibatasi → 1 bisa, 1 gagal", mixed.body.ok === 1 && mixed.body.failed === 1, JSON.stringify({ ok: mixed.body.ok, failed: mixed.body.failed }));
+  ok("diagnosis menyebut asetnya yang dibatasi (bukan menyalahkan IP server)",
+    /dibatasi|sesi Roblox yang login/i.test(String(mixed.body.diagnosis)) && !/IP data center diblokir/i.test(String(mixed.body.diagnosis)),
+    String(mixed.body.diagnosis));
+  ok("hasil gagal membawa hint perbaikan",
+    /file lokal|userscript/i.test(String(mixed.body.results.find((r) => !r.ok).hint)),
+    JSON.stringify(mixed.body.results.find((r) => !r.ok)));
+
+  seen.uaBlockAll = false;
+  const health = await callJson("/api/health");
+  ok("daftar User-Agent yang dipakai bisa dilihat di /api/health",
+    Array.isArray(health.body.userAgents) && health.body.userAgents.length >= 3 &&
+      health.body.userAgents.includes("Roblox"),
+    JSON.stringify(health.body.userAgents));
+  ok("health melaporkan IP keluar server (untuk menjelaskan blokir IP)",
+    "egressIp" in health.body, JSON.stringify(Object.keys(health.body)));
+}
+
+heading("2h. Timeout tidak meng-upload ulang + pemulihan ID (kasus nyata)");
+{
+  // Kasus yang dilaporkan user: situs bilang gagal, padahal asetnya SUDAH jadi di Roblox.
+  // Dulu: retry → upload ulang (aset ganda) lalu tetap dilaporkan gagal.
+  // Sekarang: satu upload saja, status 'belum pasti', lalu ID dicari di inventaris.
+  const uploadsBefore = seen.uploads.length;
+  seen.neverConfirm = true;
+  seen.inventoryItems = [];
+  seen.inventory.length = 0;
+
+  const job = await callJson("/api/jobs", {
+    method: "POST",
+    body: JSON.stringify({ input: "180435571", apiKey: "key-uji-panjang", options: { userId: "1234567" } })
+  });
+  ok("job timeout diterima", job.status === 202, JSON.stringify(job.body));
+
+  let snap = null;
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    const st = await callJson("/api/jobs/" + job.body.jobId);
+    snap = st.body;
+    if (["finished", "finished-with-errors", "failed", "finished-with-uncertain"].includes(snap.status)) break;
+  }
+
+  ok("hanya SATU upload terkirim (tidak ada aset ganda)",
+    seen.uploads.length - uploadsBefore === 1, String(seen.uploads.length - uploadsBefore));
+  ok("item berstatus 'pending-confirm', bukan 'error'", snap.items[0].status === "pending-confirm", JSON.stringify(snap.items[0]));
+  ok("tidak dihitung sebagai gagal", snap.summary.error === 0 && snap.summary.uncertain === 1, JSON.stringify(snap.summary));
+  ok("status job 'finished-with-uncertain'", snap.status === "finished-with-uncertain", snap.status);
+  ok("dijelaskan bahwa upload kemungkinan sudah jadi",
+    /biasanya tetap jadi|belum memberi jawaban akhir/i.test(String(snap.items[0].error)), String(snap.items[0].error));
+  ok("tautan dashboard disertakan", /create\.roblox\.com\/dashboard/.test(String(snap.dashboardUrl)), String(snap.dashboardUrl));
+  ok("inventaris sudah dicoba saat itu juga", seen.inventory.length >= 1, JSON.stringify(seen.inventory));
+  ok("output belum memuat pasangan (ID belum ketemu)", snap.output.count === 0, JSON.stringify(snap.output));
+
+  // Sekarang asumsikan asetnya muncul di inventaris (seperti yang terjadi di akun user)
+  seen.inventoryItems = [{
+    assetId: "78384449570093", name: "ISM Spoof 180435571",
+    created: new Date(Date.now() - 60_000).toISOString()
+  }];
+  const recheck = await callJson("/api/jobs/" + job.body.jobId + "/recheck", { method: "POST", body: "{}" });
+  ok("periksa ulang menemukan ID-nya", recheck.body.items[0].status === "done" && recheck.body.items[0].newId === "78384449570093",
+    JSON.stringify(recheck.body.items[0]));
+  ok("ditandai sebagai dipulihkan otomatis", recheck.body.items[0].recovered === true);
+  ok("ringkasan ikut diperbarui", recheck.body.summary.done === 1 && recheck.body.summary.uncertain === 0, JSON.stringify(recheck.body.summary));
+  ok("status job kembali 'finished'", recheck.body.status === "finished", recheck.body.status);
+  ok("output plugin sudah terisi",
+    /180435571 = 78384449570093,/.test(recheck.body.output.plugin), JSON.stringify(recheck.body.output.plugin));
+  ok("laporan periksa ulang menyebut ID yang dipulihkan",
+    recheck.body.rechecked && recheck.body.rechecked.recovered === 1, JSON.stringify(recheck.body.rechecked));
+
+  // Pemulihan otomatis tanpa menunggu periksa ulang: aset sudah ada di inventaris
+  const up2 = seen.uploads.length;
+  seen.neverConfirm = true;
+  seen.inventoryItems = [{ assetId: "555000111222", name: "ISM Spoof 180426354", created: new Date().toISOString() }];
+  const job2 = await callJson("/api/jobs", {
+    method: "POST",
+    body: JSON.stringify({ input: "180426354", apiKey: "key-uji-panjang", options: { userId: "1234567" } })
+  });
+  let snap2 = null;
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    const st = await callJson("/api/jobs/" + job2.body.jobId);
+    snap2 = st.body;
+    if (!["queued", "running"].includes(snap2.status)) break;
+  }
+  ok("pemulihan otomatis: satu upload saja", seen.uploads.length - up2 === 1, String(seen.uploads.length - up2));
+  ok("pemulihan otomatis berhasil tanpa periksa ulang",
+    snap2.items[0].status === "done" && snap2.items[0].newId === "555000111222" && snap2.items[0].recovered === true,
+    JSON.stringify(snap2.items[0]));
+  ok("job langsung 'finished' karena semua sudah jelas", snap2.status === "finished", snap2.status);
+  ok("hint 'belum pasti' tidak tertinggal di item yang sudah pulih", !snap2.items[0].hint, String(snap2.items[0].hint));
+
+  seen.neverConfirm = false;
+  seen.inventoryItems = [];
+}
+
+heading("2i. Pemulihan untuk target grup diberi tahu apa adanya");
+{
+  seen.neverConfirm = true;
+  const g = await callJson("/api/jobs", {
+    method: "POST",
+    body: JSON.stringify({ input: "180435571", apiKey: "key-uji-panjang", options: { groupId: "33445566" } })
+  });
+  let snap = null;
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    const st = await callJson("/api/jobs/" + g.body.jobId);
+    snap = st.body;
+    if (!["queued", "running"].includes(snap.status)) break;
+  }
+  ok("target grup: tetap satu upload", true);
+  ok("target grup: status 'belum pasti' (Roblox tidak punya daftar aset grup publik)",
+    snap.items[0].status === "pending-confirm", JSON.stringify(snap.items[0].status));
+  ok("user diberi tahu alasannya + saran cek dashboard",
+    /grup|dashboard/i.test(String(snap.items[0].hint) + String(snap.items[0].error)),
+    String(snap.items[0].hint));
+  seen.neverConfirm = false;
+}
+
 heading("2d. Penerjemah pesan error (explainError)");
 {
   const { createRobloxClient } = await import(path.join(__dirname, "..", "lib", "roblox.mjs"));
@@ -659,13 +842,19 @@ heading("2d. Penerjemah pesan error (explainError)");
     ["Your API key is restricted to certain IP addresses", /dibatasi IP/i],
     ["This API key has expired", /kedaluwarsa/i],
     ["Asset is under moderation review", /moderasi/i],
-    ["Too many requests", /batas\/kuota/i]
+    ["Too many requests", /batas permintaan|batas\/kuota/i]
   ];
   for (const [msg, expect] of cases) {
     const hint = c.explainError(msg);
     ok(`"${msg.slice(0, 42)}" → saran yang tepat`, Boolean(hint) && expect.test(hint), String(hint));
   }
   ok("pesan tak dikenal → null (tidak menebak)", c.explainError("sesuatu yang aneh") === null);
+  ok("429 → saran tunggu / pakai userscript",
+    /batas permintaan|userscript/i.test(String(c.explainError("CDN sibuk (HTTP 429) — server ini kena batas permintaan Roblox"))));
+  ok("403 dari CDN → saran jalankan di komputermu / userscript",
+    /IP server|userscript/i.test(String(c.explainError("Gagal mengambil isi aset (HTTP 403 dari Roblox/WinInet)"))) ||
+      /IP server|userscript/i.test(String(c.explainError("Gagal mengambil isi aset (HTTP 403)"))),
+    String(c.explainError("Gagal mengambil isi aset (HTTP 403)")));
   ok("normalizeApiKey membuang spasi/newline/kutip", c.normalizeApiKey('  "abc\ndef"  ') === "abcdef");
 }
 

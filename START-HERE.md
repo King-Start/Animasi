@@ -45,6 +45,57 @@ node server.mjs
 ```
 Untuk publik, taruh di belakang HTTPS (mis. Cloudflare Tunnel atau Caddy), jangan expose HTTP polos.
 
+## Kalau ID publik pun tidak bisa diambil
+
+Buka **Uji ambil saja** dan lihat kode HTTP di kolom error:
+
+| Yang muncul | Artinya | Yang dilakukan |
+| --- | --- | --- |
+| **HTTP 429** | Servermu kena batas permintaan Roblox (batasnya per-IP, IP data center dipakai bersama) | Tunggu 1–2 menit lalu ulangi; kalau sering, jalankan server di komputermu sendiri |
+| **HTTP 401/403 di semua ID** | Roblox menolak permintaan dari IP server itu, bukan soal asetnya | Jalankan server lokal, atau pakai userscript (ambil dari IP-mu) |
+| **Sebagian gagal** dengan `User is not authorized` | Aset itu memang dibatasi pemiliknya | Userscript / tab *Dari file lokal* |
+
+Sejak pembaruan ini, tiap baris gagal menampilkan **HTTP status** dan **daftar percobaan** (endpoint + User-Agent + status), dan server mencoba lima User-Agent bergilir seperti aplikasi V2. `/api/health` juga menampilkan **IP keluar server** (`egressIp`) supaya bisa dicek kalau Roblox memblokir IP-nya.
+
+## Kalau situs bilang "gagal" padahal asetnya sudah masuk
+
+Kasus ini nyata: upload kadang **berhasil** di Roblox, tapi situs **belum sempat** menerima
+jawaban akhirnya. Dulu itu dilaporkan sebagai `gagal` — dan karena dianggap bisa diulang,
+sistem meng-upload ulang berkas yang sama (makanya di Creator Dashboard muncul beberapa aset
+dengan nama mirip hanya berselang beberapa detik).
+
+Sekarang:
+
+| Keadaan | Yang ditampilkan situs | Artinya |
+| --- | --- | --- |
+| Roblox memberi ID akhir | `selesai` + ID baru | aman, ID bisa langsung dipakai |
+| Roblox belum menjawab sampai batas waktu | **`belum pasti`** (tile "Belum pasti", bukan "Gagal") | upload **kemungkinan besar sudah jadi**; tidak ada upload ulang, tidak ada aset ganda |
+| ID akhirnya ketemu di daftar asetmu | `selesai` + tanda *ID dipulihkan otomatis* | ID tetap kamu dapat tanpa upload ulang |
+
+Cara memakainya:
+
+1. Tunggu ± 15–60 detik.
+2. Tekan **Periksa ulang hasil** (atau tombol **Periksa ulang** di baris item itu).
+   Situs akan menanyakan lagi status operasi upload **dan** membaca daftar aset terbaru milik
+   User ID tujuan, lalu mencocokkan namanya dengan item yang belum pasti.
+3. Kalau tetap belum ketemu, buka tautan **Creator Dashboard** di baris itu — asetnya ada di
+   sana karena upload memang sudah jalan.
+
+Catatan: pemulihan otomatis hanya bekerja untuk **target User** (daftar aset pribadi yang
+publik). Untuk **target Grup**, Roblox tidak menyediakan daftar aset publik — di situ item
+dibiarkan `belum pasti` beserta saran cek dashboard, bukan diklaim gagal.
+
+### Kenapa ID hasil re-upload tidak langsung "bisa dipakai"?
+
+Karena re-upload menghasilkan **aset baru milikmu**, bukan salinan dari aset lama. Animasi
+Roblox tetap dikunci seperti asalnya: kalau asal asetnya cuma bisa dipakai di game tertentu
+atau butuh kepemilikan, aset baru itu pun butuh cara pakai yang sama. Jadi setelah dapat ID baru:
+
+- pakai jalur **Place ID** (isi Place/Game ID di situs) bila animasinya terikat game, atau
+- tarik berkasnya lewat **userscript** (sesi browser kamu) lalu upload dari tab **Dari file lokal**, atau
+- tempel ID barunya di jendela **"Replace Ids"** milik plugin Studio — ID itu memang ID milikmu,
+  jadi bisa kamu pakai di tempatmu sendiri.
+
 ## Yang perlu diketahui
 - Server ini **tidak pernah** memakai cookie akun Roblox. Auth hanya API key / OAuth.
 - API key tidak ditulis ke disk dan tidak masuk log.

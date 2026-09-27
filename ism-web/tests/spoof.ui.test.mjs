@@ -51,6 +51,8 @@ let healthBody = {
 };
 let meBody = { loggedIn: false };
 let jobSnapshot = null;
+let recheckBody = null;
+const recheckCalls = [];
 let checkKeyBody = {
   ok: false, usingServerKey: false, verdict: "reject",
   credential: { kind: "opaque-long", length: 964, label: "kredensial 964 karakter \u2014 bukan bentuk kunci API Open Cloud (biasanya ~48)" },
@@ -112,6 +114,10 @@ const dom = new JSDOM(html, {
         return reply(202, { jobId: "job-uji", total: 2 });
       }
       if (path.includes("/api/jobs/job-uji/events")) return reply(200, {});
+      if (path.includes("/api/jobs/job-uji/recheck")) {
+        recheckCalls.push({ method: (opts && opts.method) || "GET" });
+        return reply(200, recheckBody);
+      }
       if (path.includes("/api/jobs/job-uji")) return reply(200, jobSnapshot);
       if (path.endsWith("/api/logout")) return reply(200, { ok: true });
       return reply(404, { error: "tidak ada di mock: " + path });
@@ -365,6 +371,63 @@ const dom3 = new JSDOM(html, {
 });
 await wait(160);
 ok("kotak password gate muncul saat gate tertutup", dom3.window.document.querySelector("#gateBox").style.display === "block");
+
+heading("9. Status 'belum pasti' & tombol Periksa ulang (kasus: situs bilang gagal, padahal sudah masuk)");
+ok("tile 'Belum pasti' ada di ringkasan", Boolean($("#sUncertain")));
+ok("nilainya mulai dari 0", $("#sUncertain").textContent === "0", $("#sUncertain").textContent);
+ok("tombol 'Periksa ulang hasil' tersedia", Boolean($("#recheckBtn")));
+ok("tombol periksa ulang per baris belum ada sebelum ada item belum pasti",
+  !/data-recheck/.test($("#rows").innerHTML));
+
+// Server menjawab: satu item upload-nya jalan tapi Roblox belum memberi ID akhir.
+recheckBody = {
+  status: "finished-with-uncertain",
+  summary: { total: 2, done: 1, error: 0, skipped: 0, uncertain: 1, pending: 0 },
+  items: [
+    { id: "180435571", status: "pending-confirm", error: "Unggahan kemungkinan besar tetap jadi; Roblox belum memberi jawaban akhir dalam batas waktu.", hint: "Cek Creator Dashboard atau tekan Periksa ulang." },
+    { id: "180426354", status: "done", newId: "9876543210" }
+  ],
+  output: { plugin: "180426354 = 9876543210,", plain: "9876543210", pairs: "180426354,9876543210", count: 1 },
+  dashboardUrl: "https://create.roblox.com/dashboard/creations?activeTab=Animation"
+};
+click($("#recheckBtn"));
+await wait(80);
+ok("periksa ulang memanggil POST /recheck", recheckCalls.length === 1 && recheckCalls[0].method === "POST",
+  JSON.stringify(recheckCalls));
+ok("baris menampilkan status 'belum pasti'", /belum pasti/.test($("#rows").textContent), $("#rows").textContent.slice(0, 200));
+ok("baris TIDAK ditandai gagal", !/gagal/.test($("#rows").textContent), $("#rows").textContent.slice(0, 200));
+ok("dijelaskan ID-nya menyusul", /ID menyusul/.test($("#rows").textContent), $("#rows").textContent.slice(0, 240));
+ok("ada tautan ke Creator Dashboard di baris itu",
+  /create\.roblox\.com\/dashboard/.test($("#rows").innerHTML), $("#rows").innerHTML.slice(0, 300));
+ok("tile 'Belum pasti' ikut terisi 1", $("#sUncertain").textContent === "1", $("#sUncertain").textContent);
+ok("tidak dihitung sebagai gagal (tile error tetap 0)", $("#sErr").textContent === "0", $("#sErr").textContent);
+ok("keluaran plugin tidak diisi untuk item yang belum pasti", $("#output").value === "180426354 = 9876543210,", $("#output").value);
+ok("log menjelaskan apa yang harus dilakukan",
+  /belum pasti/i.test($("#log").textContent), $("#log").textContent.slice(-300));
+
+// Sekarang asetnya muncul di inventaris → ID dipulihkan.
+recheckBody = {
+  status: "finished",
+  summary: { total: 2, done: 2, error: 0, skipped: 0, uncertain: 0, pending: 0 },
+  items: [
+    { id: "180435571", status: "done", newId: "78384449570093", recovered: true },
+    { id: "180426354", status: "done", newId: "9876543210" }
+  ],
+  output: { plugin: "180435571 = 78384449570093,\n180426354 = 9876543210,", plain: "78384449570093\n9876543210", pairs: "180435571,78384449570093\n180426354,9876543210", count: 2 },
+  rechecked: { recovered: 1, uncertainLeft: 0 }
+};
+const rowBtn = $("#rows").querySelector("[data-recheck]");
+ok("tombol per baris muncul pada item yang belum pasti", Boolean(rowBtn));
+click(rowBtn);
+await wait(80);
+ok("klik tombol baris ikut memanggil /recheck", recheckCalls.length === 2, JSON.stringify(recheckCalls));
+ok("ID hasil pemulihan tampil sebagai tautan library",
+  /roblox\.com\/library\/78384449570093/.test($("#rows").innerHTML), $("#rows").innerHTML.slice(0, 300));
+ok("ditandai 'ID dipulihkan otomatis'", /dipulihkan otomatis/.test($("#rows").textContent), $("#rows").textContent.slice(0, 240));
+ok("tile 'Belum pasti' kembali 0", $("#sUncertain").textContent === "0", $("#sUncertain").textContent);
+ok("keluaran plugin ikut berisi ID yang dipulihkan",
+  $("#output").value.includes("78384449570093"), JSON.stringify($("#output").value));
+ok("log melaporkan pemulihan", /dipulihkan/.test($("#log").textContent), $("#log").textContent.slice(-220));
 
 console.log("\n" + "=".repeat(54));
 console.log(`${pass} lolos · ${fail} gagal`);
