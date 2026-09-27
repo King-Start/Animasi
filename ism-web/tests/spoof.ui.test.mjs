@@ -56,6 +56,8 @@ const recheckCalls = [];
 let uploadCheckBody = null;
 const uploadCheckCalls = [];
 let reportText = "# Laporan job ISpooferMotion Web\njobId : job-uji\n";
+let handoffBody = { ok: true, jobs: [], pairs: [], lines: "", count: 0 };
+let openedUrls = [];
 let checkKeyBody = {
   ok: false, usingServerKey: false, verdict: "reject",
   credential: { kind: "opaque-long", length: 964, label: "kredensial 964 karakter \u2014 bukan bentuk kunci API Open Cloud (biasanya ~48)" },
@@ -87,8 +89,11 @@ const dom = new JSDOM(html, {
   runScripts: "dangerously",
   pretendToBeVisual: true,
   virtualConsole: vc,
+  url: "https://situs-uji.example/spoof.html", // supaya location.origin bisa diuji
+  beforeParse(win0) { win0.navigator.clipboard = { writeText: () => Promise.resolve() }; },
   beforeParse(win) {
     win.EventSource = FakeEventSource;
+    win.open = (url) => { openedUrls.push(url); return null; };
     win.navigator.clipboard = { writeText: () => Promise.resolve() };
     win.HTMLAnchorElement.prototype.click = function () { win.__downloads = (win.__downloads || 0) + 1; };
     win.URL.createObjectURL = () => "blob:palsu";
@@ -117,6 +122,7 @@ const dom = new JSDOM(html, {
         return reply(202, { jobId: "job-uji", total: 2 });
       }
       if (path.includes("/api/jobs/job-uji/events")) return reply(200, {});
+      if (path.endsWith("/api/handoff")) return reply(200, handoffBody);
       if (path.endsWith("/api/check-upload")) {
         uploadCheckCalls.push({ method: (opts && opts.method) || "GET", body: JSON.parse((opts && opts.body) || "{}") });
         return reply(200, uploadCheckBody);
@@ -486,6 +492,58 @@ ok("berkas laporan benar-benar diunduh", (win.__downloads || 0) === unduhanSebel
   String((win.__downloads || 0) - unduhanSebelum));
 ok("log menjelaskan isi laporan (tanpa kredensial)",
   /laporan diunduh/.test($("#log").textContent) && /tanpa kredensial/.test($("#log").textContent), $("#log").textContent.slice(-200));
+
+heading("11. Mode ekstensi (serah-terima ke sesi browser)");
+ok("panel mode ekstensi ada", Boolean($("#extPanel")));
+ok("tombol jalankan lewat sesi browser ada", Boolean($("#extRunBtn")));
+ok("tautan unduh userscript ada & menunjuk berkas yang benar",
+  Boolean($("#extScript")) && /ism-fetch\.user\.js$/.test($("#extScript").getAttribute("href")),
+  $("#extScript") && $("#extScript").getAttribute("href"));
+
+type($("#input"), "180435571\n180426354");
+click($("#extRunBtn"));
+await wait(60);
+const handoffUrl = openedUrls[openedUrls.length - 1] || "";
+ok("membuka roblox.com dengan daftar ID", /^https:\/\/www\.roblox\.com\/home\?/.test(handoffUrl), handoffUrl);
+ok("ID ikut dibawa di URL (urut dan unik)",
+  /ism_ids=180426354%2C180435571|ism_ids=180435571%2C180426354/.test(handoffUrl), handoffUrl);
+ok("alamat situs ikut dibawa (biar userscript tidak perlu disetel manual)",
+  /ism_site=https%3A%2F%2Fsitus-uji\.example/.test(handoffUrl), handoffUrl);
+ok("tidak pernah mengirim ism_site=null", !/ism_site=null/.test(handoffUrl), handoffUrl);
+ok("URL serah-terima ditampilkan untuk diperiksa", /ism_ids=/.test($("#extHandoff").textContent), $("#extHandoff").textContent.slice(0, 80));
+ok("log menjelaskan langkahnya", /userscript/i.test($("#log").textContent), $("#log").textContent.slice(-200));
+
+ok("tanpa ID → tidak membuka apa pun, ada peringatan",
+  (() => { const n = openedUrls.length; type($("#input"), ""); click($("#extRunBtn")); return openedUrls.length === n; })());
+
+handoffBody = {
+  ok: true, count: 2,
+  jobs: [
+    { jobId: "jobSesi1", at: "2026-09-27T09:00:00Z", status: "finished", target: "user 1234567",
+      pairs: [{ oldId: "180435571", newId: "78384449570093" }, { oldId: "180426354", newId: "555000111222" }] }
+  ],
+  pairs: [{ oldId: "180435571", newId: "78384449570093" }, { oldId: "180426354", newId: "555000111222" }],
+  lines: "180435571 = 78384449570093,\n180426354 = 555000111222,"
+};
+click($("#extRefreshBtn"));
+await wait(80);
+ok("hasil dari sesi browser tampil di tabel", /78384449570093/.test($("#extRows").textContent), $("#extRows").textContent.slice(0, 200));
+ok("ID baru jadi tautan ke library Roblox",
+  /roblox\.com\/library\/78384449570093/.test($("#extRows").innerHTML), $("#extRows").innerHTML.slice(0, 200));
+ok("job id ditampilkan", /jobSesi1/.test($("#extRows").textContent), $("#extRows").textContent.slice(0, 200));
+
+click($("#extCopyBtn"));
+await wait(60);
+ok("salin semua menaruh teks format plugin ke kotak Hasil",
+  /180435571 = 78384449570093,/.test($("#output").value), JSON.stringify($("#output").value));
+ok("log menyebut jumlah pasangan (disalin otomatis atau disiapkan untuk Ctrl+C)",
+  /2 pasangan/.test($("#log").textContent) && /(disalin|Ctrl\+C)/.test($("#log").textContent), $("#log").textContent.slice(-200));
+
+handoffBody = { ok: true, jobs: [], pairs: [], lines: "", count: 0 };
+click($("#extRefreshBtn"));
+await wait(80);
+ok("kembali kosong → tabel memberi tahu apa adanya",
+  /Belum ada hasil dari sesi browser/.test($("#extRows").textContent), $("#extRows").textContent.slice(0, 160));
 
 console.log("\n" + "=".repeat(54));
 console.log(`${pass} lolos · ${fail} gagal`);

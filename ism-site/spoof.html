@@ -369,6 +369,33 @@ https://www.roblox.com/library/1234567893/apa-pun
       </p>
     </div>
 
+    <div class="panel" id="extPanel">
+      <div class="row" style="margin:0 0 6px">
+        <h2 style="flex:1">Mode ekstensi — lewat sesi browser</h2>
+        <span class="tag">opsional</span>
+      </div>
+      <p class="hint" style="margin-top:0">
+        Persis alur extension: ID di kolom kiri → <b>diunduh memakai sesi login di browsermu</b> → di-upload balik
+        ke Roblox. Upload tetap memakai kunci API-mu; <b>cookie tidak pernah dikirim ke server mana pun</b>.
+        Butuh userscript sekali pasang (juga bisa: Tampermonkey → Tambah script baru → tempel):
+        <a id="extScript" href="ism-fetch.user.js" download>ism-fetch.user.js</a>.
+      </p>
+      <div class="row">
+        <button class="btn" id="extRunBtn" type="button">Jalankan ID di kolom kiri (sesi browser)</button>
+        <button class="btn ghost" id="extRefreshBtn" type="button">Segarkan hasil</button>
+      </div>
+      <div class="mono" id="extHandoff" style="font-size:11.5px;color:var(--mut-2);margin-top:6px"></div>
+      <div class="tblwrap" style="margin-top:8px">
+        <table>
+          <thead><tr><th>ID lama</th><th>ID baru</th><th>job</th></tr></thead>
+          <tbody id="extRows"><tr><td colspan="3" style="color:var(--mut-2);padding:12px">Belum ada hasil dari sesi browser.</td></tr></tbody>
+        </table>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn sm ghost" id="extCopyBtn" type="button">Salin semua (format plugin)</button>
+      </div>
+    </div>
+
     <div class="panel">
       <h2 style="margin-bottom:10px">Cek cepat sebelum mulai</h2>
       <p class="hint" style="margin-top:0">
@@ -414,7 +441,7 @@ https://www.roblox.com/library/1234567893/apa-pun
   var $ = function (s) { return document.querySelector(s); };
   var state = {
     health: null, jobId: null, es: null, poll: null, items: [], fmt: "plugin",
-    output: { plugin: "", plain: "", pairs: "" }, running: false, file: null
+    output: { plugin: "", plain: "", pairs: "" }, running: false, file: null, handoffLines: ""
   };
 
   /* ---------------- util ---------------- */
@@ -850,6 +877,91 @@ https://www.roblox.com/library/1234567893/apa-pun
     $("#fileInfo").innerHTML = '<span class="mono" style="font-size:12.5px">' + esc(f.name) + " · " + (f.size / 1024).toFixed(1) + " KB</span>";
     refreshRun();
   }
+
+  /* ---- Mode ekstensi: serah-terima ke userscript lewat URL ---- */
+  function extIds() {
+    var p = previewParse($("#input").value);
+    return (p.ids || []).map(String);
+  }
+
+  /* Alamat situs ini yang dikirim ke userscript. Jangan pernah mengirim "null". */
+  function siteOrigin() {
+    var o = location.origin;
+    if (!o || o === "null") o = location.protocol === "http:" || location.protocol === "https:" ? location.protocol + "//" + location.host : "";
+    return /^https?:\/\//.test(o) ? o : "";
+  }
+
+  function extRun() {
+    var ids = extIds();
+    if (!ids.length) { logLine("isi asset ID di kolom kiri dulu", "warn"); return; }
+    if (ids.length > 60) { ids = ids.slice(0, 60); logLine("dibatasi 60 ID per jalan supaya URL-nya tidak kepanjangan", "warn"); }
+    var origin = siteOrigin();
+    var url = "https://www.roblox.com/home?ism_ids=" + encodeURIComponent(ids.join(",")) +
+      (origin ? "&ism_site=" + encodeURIComponent(origin) : "");
+    $("#extHandoff").textContent = "URL serah-terima: " + url + (origin ? "" : "  (alamat situs tidak terdeteksi — isi manual di Pengaturan userscript)");
+    logLine("membuka Roblox — userscript akan menjalankan " + ids.length + " ID memakai sesi browsermu…");
+    logLine("kalau userscript belum dipasang, ambil di: " + location.origin + "/ism-fetch.user.js");
+    window.open(url, "_blank", "noopener");
+  }
+
+  function loadHandoff() {
+    return api("/api/handoff").then(function (r) {
+      if (!r.ok) return;
+      var d = r.body || {};
+      state.handoffLines = d.lines || "";
+      var rows = $("#extRows");
+      if (!rows) return;
+      if (!d.count) {
+        rows.innerHTML = '<tr><td colspan="3" style="color:var(--mut-2);padding:12px">Belum ada hasil dari sesi browser.</td></tr>';
+        return;
+      }
+      rows.innerHTML = d.jobs.map(function (j) {
+        if (!j.pairs.length) {
+          return '<tr><td class="mono">—</td><td class="mono" style="color:var(--mut-2)">' + esc(j.status) + '</td><td class="mono">' + esc(j.jobId) + "</td></tr>";
+        }
+        return j.pairs.map(function (p) {
+          return '<tr><td class="mono">' + esc(p.oldId) + '</td>' +
+            '<td class="mono"><a href="https://www.roblox.com/library/' + encodeURIComponent(p.newId) +
+            '" target="_blank" rel="noopener">' + esc(p.newId) + '</a></td>' +
+            '<td class="mono">' + esc(j.jobId) + '</td></tr>';
+      }).join("");
+      }).join("");
+    }, function () { /* server mati: biarkan */ });
+  }
+
+  function extCopy() {
+    var txt = state.handoffLines || "";
+    if (!txt) { logLine("belum ada hasil dari sesi browser untuk disalin", "warn"); return; }
+    var jumlah = txt.split("\n").filter(Boolean).length;
+    var ta = $("#output");
+    function keKotakHasil() {
+      ta.value = txt;           // biar tetap bisa disalin manual (Ctrl+C) kalau otomatis gagal
+      ta.focus();
+      try { ta.select(); } catch (e) {}
+      logLine("tidak bisa menyalin otomatis — " + jumlah + " pasangan sudah ditaruh di kotak Hasil, tekan Ctrl+C", "warn");
+    }
+    if (window.navigator && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(function () {
+        logLine("hasil sesi browser disalin (" + jumlah + " pasangan) — tempel ke Replace Ids", "ok");
+      }, keKotakHasil);
+      return;
+    }
+    ta.value = txt;
+    try { ta.select(); } catch (e) {}
+    try {
+      if (document.execCommand && document.execCommand("copy")) {
+        logLine("hasil sesi browser disalin (" + jumlah + " pasangan) — tempel ke Replace Ids", "ok");
+        return;
+      }
+    } catch (e) { /* jatuh ke bawah */ }
+    keKotakHasil();
+  }
+
+  if ($("#extRunBtn")) $("#extRunBtn").addEventListener("click", extRun);
+  if ($("#extRefreshBtn")) $("#extRefreshBtn").addEventListener("click", function () { loadHandoff().then(function () { logLine("hasil sesi browser disegarkan"); }); });
+  if ($("#extCopyBtn")) $("#extCopyBtn").addEventListener("click", extCopy);
+  loadHandoff();
+  setInterval(function () { if (!document.hidden) loadHandoff(); }, 6000);
 
   /* ---- uji izin upload: TIDAK membuat aset apa pun ---- */
   function ujiIzinUpload() {

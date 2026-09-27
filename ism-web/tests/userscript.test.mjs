@@ -47,7 +47,7 @@ ok("marker blok murni ada", !!m);
 if (!m) { console.log("\n" + pass + " lolos · " + fail + " gagal"); process.exit(1); }
 
 const pure = new Function(
-  m[1] + "\nreturn { assetIdFromUrl, isGzipBytes, errorFromBody, safeFileName, csrfFromHeaders, apiUrl, looksLikeApiKey, explainSessionFailure, libraryPageCdnUrl, locationFromHeaders, gameContextHeaders, buildBatchBody, parseBatchResponse, retryAfterMs, uuidish };"
+  m[1] + "\nreturn { assetIdFromUrl, isGzipBytes, errorFromBody, safeFileName, csrfFromHeaders, apiUrl, looksLikeApiKey, explainSessionFailure, libraryPageCdnUrl, locationFromHeaders, gameContextHeaders, buildBatchBody, parseBatchResponse, retryAfterMs, uuidish, parseIdList, handoffFromSearch, pluginLines, queueLabel };"
 )();
 ok("blok murni tidak menyentuh DOM/GM_* saat dijalankan",
   !/document\.|GM_xmlhttpRequest/.test(m[1]), "ada referensi DOM di blok murni");
@@ -154,9 +154,39 @@ heading("8. Tiga jalur pengambilan (meniru ISpooferMotion V2)");
   ok("uuidish menghasilkan bentuk UUID", /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(pure.uuidish()), pure.uuidish());
 }
 
+heading("9b. parseIdList · handoffFromSearch · pluginLines");
+{
+  const p1 = pure.parseIdList("180435571 180426354\n507770239,507770239");
+  ok("mengambil semua ID dari teks campuran", p1.length === 3, JSON.stringify(p1));
+  ok("membuang ID kembar", p1.filter((x) => x === "507770239").length === 1, JSON.stringify(p1));
+  ok("mengabaikan angka pendek (< 6 digit)", pure.parseIdList("12 345 180435571").length === 1, JSON.stringify(pure.parseIdList("12 345 180435571")));
+  ok("menerima ID yang dipisah koma maupun spasi",
+    JSON.stringify(pure.parseIdList("180435571,180426354 507770239")) === JSON.stringify(["180435571", "180426354", "507770239"]),
+    JSON.stringify(pure.parseIdList("180435571,180426354 507770239")));
+  ok("berhenti di 100 ID", pure.parseIdList(Array.from({ length: 300 }, (_, i) => String(100000000000 + i)).join("\n")).length === 100);
+  ok("teks kosong → array kosong", pure.parseIdList("").length === 0 && pure.parseIdList(null).length === 0);
+
+  const h = pure.handoffFromSearch("?ism_ids=180435571,180426354&ism_site=https%3A%2F%2Fism.example.com");
+  ok("handoff membaca daftar ID dari URL", JSON.stringify(h.ids) === JSON.stringify(["180435571", "180426354"]), JSON.stringify(h.ids));
+  ok("handoff membaca alamat situs", h.site === "https://ism.example.com", String(h.site));
+  ok("garis miring di akhir alamat situs dibuang", pure.handoffFromSearch("?ism_site=https://a.b/").site === "https://a.b", String(pure.handoffFromSearch("?ism_site=https://a.b/").site));
+  ok("URL tanpa parameter → kosong, tidak error",
+    pure.handoffFromSearch("").ids.length === 0 && pure.handoffFromSearch("").site === null);
+  ok("alamat situs aneh (bukan http) diabaikan", pure.handoffFromSearch("?ism_ids=180435571&ism_site=javascript:alert(1)").site === null, "harus null");
+
+  ok("pluginLines menghasilkan format plugin",
+    pure.pluginLines([{ oldId: "180435571", newId: "78384449570093" }, { oldId: "180426354", newId: "555000111222" }]) ===
+      "180435571 = 78384449570093,\n180426354 = 555000111222,",
+    pure.pluginLines([{ oldId: "180435571", newId: "78384449570093" }]));
+  ok("pasangan tanpa ID baru dilewati", pure.pluginLines([{ oldId: "1", newId: null }]) === "", "harus kosong");
+  ok("daftar kosong → teks kosong", pure.pluginLines([]) === "" && pure.pluginLines(null) === "");
+  ok("label antrean menyebut posisi & ID", pure.queueLabel(3, 12, "180435571") === "(3/12) ID 180435571", pure.queueLabel(3, 12, "180435571"));
+}
+
 heading("9. Pemeriksaan statis v1.1");
 {
-  ok("versi userscript naik ke 1.1.0", /@version\s+1\.1\.0/.test(src));
+  ok("versi userscript 1.2.0 (alur antrean seperti extension)", /@version\s+1\.2\.0/.test(src), (src.match(/@version\s+[\d.]+/) || [])[0]);
+  ok("versi lama 1.1.0 tidak lagi dipakai", !/@version\s+1\.1\.0/.test(src), "masih ada @version 1.1.0");
   ok("ketiga jalur ada di kode", /resolveFromLibraryPage/.test(src) && /resolveFromAssetDelivery/.test(src) && /resolveFromBatch/.test(src));
   ok("jalur batch memakai endpoint yang sama dengan V2", /assetdelivery\.roblox\.com\/v2\/assets\/batch/.test(src));
   ok("semua permintaan aset memakai sesi browser (withCredentials: true)",
@@ -166,6 +196,16 @@ heading("9. Pemeriksaan statis v1.1");
   ok("header konteks game disalin dari V2 (Roblox-Place-Id / Roblox-Game-Id / Roblox-Session-Id)",
     /Roblox-Place-Id/.test(src) && /Roblox-Game-Id/.test(src) && /Roblox-Session-Id/.test(src));
   ok("429 ditangani dengan Retry-After", /retryAfterMs/.test(src) && /requestWithRetry/.test(src));
+  /* ---------------- antrean ala extension ---------------- */
+  ok("userscript mengirim penanda via=userscript ke situs", /fd\.append\("via", "userscript"\)/.test(src));
+  ok("ada textarea untuk banyak ID sekaligus", /ism-ids/.test(src), "cari #ism-ids");
+  ok("ada tombol salin hasil (format plugin)", /Salin hasil/.test(src));
+  ok("ada tombol unduh semua", /Unduh semua/.test(src));
+  ok("serah-terima dari situs dibaca dari URL (ism_ids/ism_site)", /handoffFromSearch\(location\.search\)/.test(src));
+  ok("antrean dijalankan otomatis saat datang dari situs", /runQueue\("site"\)/.test(src) && /setTimeout/.test(src));
+  ok("tidak berhenti di tengah antrean saat satu ID gagal", /failCount\+\+/.test(src) && /catch \(e\)/.test(src));
+  ok("batas 100 ID per antrean", /length >= 100/.test(src));
+
   ok("Place ID bisa diisi user", /Place ID game \(opsional/.test(src) || /placeId: "".*placeId/.test(src));
 }
 

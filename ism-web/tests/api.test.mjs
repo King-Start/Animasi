@@ -939,6 +939,79 @@ heading("2k. Laporan job (untuk dikirim ke mana pun, tanpa kredensial)");
   ok("job tak dikenal → 404 yang jelas", served.status === 404, String(served.status));
 }
 
+heading("2l. Hasil dari sesi browser (userscript) muncul di situs");
+{
+  // Job biasa lewat daftar ID: TIDAK boleh muncul di daftar hasil sesi browser.
+  const biasa = await callJson("/api/jobs", {
+    method: "POST", body: JSON.stringify({ input: "180435571", apiKey: "key-uji-panjang", options: { userId: "1234567" } })
+  });
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    const st = await callJson("/api/jobs/" + biasa.body.jobId);
+    if (!["queued", "running"].includes(st.body.status)) break;
+  }
+
+  // Job yang datang dari userscript (via=userscript)
+  seen.uploads.length = 0;
+  const fd = new FormData();
+  fd.append("file", new Blob([fakeRbxm("9")], { type: "application/octet-stream" }), "ism-180435571.rbxm");
+  fd.append("assetType", "Animation");
+  fd.append("apiKey", "key-uji-panjang");
+  fd.append("userId", "1234567");
+  fd.append("displayName", "Spoof 180435571");
+  fd.append("via", "userscript");
+  fd.append("oldId", "180435571"); // dikirim userscript supaya keluaran tetap "lama = baru,"
+  const up = await fetch(BASE + "/api/jobs-file", {
+    method: "POST", body: fd, headers: cookieHeader() ? { cookie: cookieHeader() } : {}
+  });
+  ok("job dari userscript diterima", up.status === 202, String(up.status));
+  const jobId = (await up.json()).jobId;
+
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    const st = await callJson("/api/jobs/" + jobId);
+    if (!["queued", "running"].includes(st.body.status)) break;
+  }
+
+  const h = await callJson("/api/handoff");
+  ok("daftar hasil bisa diambil", h.status === 200 && h.body.ok === true, JSON.stringify(h.body).slice(0, 120));
+  const daftar = h.body.jobs || [];
+  ok("job dari userscript muncul di daftar", daftar.some((j) => j.jobId === jobId), JSON.stringify(daftar.map((j) => j.jobId)));
+  const mine = daftar.find((j) => j.jobId === jobId);
+  ok("pasangan lama→baru ikut dilaporkan", Boolean(mine) && mine.pairs.length === 1 && /^\d+$/.test(mine.pairs[0].newId),
+    JSON.stringify(mine && mine.pairs));
+  ok("target dicatat sebagai user 1234567", Boolean(mine) && /user 1234567/.test(String(mine.target)), String(mine && mine.target));
+  ok("keluaran plugin memakai ID asal yang dikirim userscript (bukan nama job acak)",
+    /^180435571 = \d+,$/m.test(String(h.body.lines)), JSON.stringify(String(h.body.lines).slice(0, 80)));
+  ok("job biasa (dari daftar ID) TIDAK tercampur ke daftar ini",
+    !daftar.some((j) => j.jobId === biasa.body.jobId), JSON.stringify({ biasa: biasa.body.jobId, daftar: daftar.map((j) => j.jobId) }));
+  ok("jumlah pasangan ikut dilaporkan", h.body.count === h.body.pairs.length, JSON.stringify({ count: h.body.count, pairs: h.body.pairs.length }));
+
+  // Upload manual biasa (tanpa ID asal): job tetap terdaftar, tapi tidak menambah pasangan palsu.
+  const fd2 = new FormData();
+  fd2.append("file", new Blob([fakeRbxm("8")], { type: "application/octet-stream" }), "tanpa-id.rbxm");
+  fd2.append("assetType", "Animation");
+  fd2.append("apiKey", "key-uji-panjang");
+  fd2.append("userId", "1234567");
+  fd2.append("displayName", "Upload manual");
+  fd2.append("via", "userscript");
+  const up2 = await fetch(BASE + "/api/jobs-file", {
+    method: "POST", body: fd2, headers: cookieHeader() ? { cookie: cookieHeader() } : {}
+  });
+  const jobId2 = (await up2.json()).jobId;
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    const st = await callJson("/api/jobs/" + jobId2);
+    if (!["queued", "running"].includes(st.body.status)) break;
+  }
+  const h2 = await callJson("/api/handoff");
+  const mine2 = (h2.body.jobs || []).find((j) => j.jobId === jobId2);
+  ok("job tanpa ID asal tetap terdaftar", Boolean(mine2), JSON.stringify((h2.body.jobs || []).map((j) => j.jobId)));
+  ok("job tanpa ID asal tidak menambah pasangan palsu",
+    Boolean(mine2) && mine2.pairs.length === 0 && !/Upload manual/.test(String(h2.body.lines)),
+    JSON.stringify({ pairs: mine2 && mine2.pairs, lines: String(h2.body.lines).slice(0, 60) }));
+}
+
 heading("2d. Penerjemah pesan error (explainError)");
 {
   const { createRobloxClient } = await import(path.join(__dirname, "..", "lib", "roblox.mjs"));

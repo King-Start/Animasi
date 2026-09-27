@@ -184,6 +184,7 @@ function newJob(meta) {
     items: meta.items,
     options: meta.options,
     auth: meta.auth,
+    origin: meta.origin || null, // "userscript" = job dari serah-terima sesi browser
     concurrency: meta.concurrency,
     createdAtMs: Date.now(),
     summary: { total: meta.items.length, done: 0, error: 0, skipped: 0, uncertain: 0, pending: meta.items.length },
@@ -853,11 +854,16 @@ const server = http.createServer(async (req, res) => {
       };
       job_validateTarget(target);
       const auth = resolveAuth(req, form.get("apiKey"));
+      const viaUserscript = String(form.get("via") || "").trim() === "userscript";
 
       const id = randomBytes(6).toString("base64url");
       const job = newJob({
         items: [{
           id: id, status: "pending", source: "file", bytes,
+          // ID asal (kalau upload ini bagian dari alur spoofer: lama → baru)
+          oldId: /^\d{6,}$/.test(String(form.get("oldId") || "").trim())
+            ? String(form.get("oldId")).trim()
+            : (/^Spoof\s+(\d{6,})$/i.exec(String(form.get("displayName") || "")) || [])[1] || null,
           fileName: file.name || "uploads.rbxm", assetType,
           displayName: String(form.get("displayName") || file.name || "ISM Upload").slice(0, 50),
           name: file.name || null
@@ -867,6 +873,7 @@ const server = http.createServer(async (req, res) => {
           target, rememberKey: false, placeId: null
         },
         auth,
+        origin: viaUserscript ? "userscript" : null,
         concurrency: 1
       });
       log(`job ${job.id}: file ${file.name} (${bytes.length} B) → ${target.groupId ? "group " + target.groupId : "user " + target.userId}`);
@@ -1051,6 +1058,31 @@ const server = http.createServer(async (req, res) => {
         return json(res, 404, { error: "Job tidak ditemukan atau sudah kedaluwarsa." });
       }
       return json(res, 200, { ok: true, text: jobReportText(job) });
+    }
+
+    /* ---------- hasil yang datang dari sesi browser (userscript) ---------- */
+    if (p === "/api/handoff" && req.method === "GET") {
+      const list = [];
+      for (const job of jobs.values()) {
+        if (job.origin !== "userscript") continue;
+        const pairs = job.items
+          .filter((i) => i.newId && (i.oldId || /^\d{6,}$/.test(String(i.id))))
+          .map((i) => ({ oldId: i.oldId || i.id, newId: i.newId, recovered: Boolean(i.recovered) }));
+        list.push({
+          jobId: job.id,
+          at: new Date(job.createdAtMs || Date.now()).toISOString(),
+          status: job.status,
+          target: job.options && job.options.target
+            ? (job.options.target.groupId ? "grup " + job.options.target.groupId : "user " + job.options.target.userId)
+            : null,
+          pairs
+        });
+      }
+      list.sort((a, b) => (a.at < b.at ? 1 : -1)); // terbaru dulu
+      const recent = list.slice(0, 20);
+      const pairs = recent.flatMap((j) => j.pairs);
+      const lines = pairs.map((x) => x.oldId + " = " + x.newId + ",").join("\n");
+      return json(res, 200, { ok: true, jobs: recent, pairs, lines, count: pairs.length });
     }
 
     /* ---------- util: parse input saja (dipakai UI untuk pratinjau) ---------- */

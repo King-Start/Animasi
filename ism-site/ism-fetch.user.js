@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ISpooferMotion — Ambil aset di sesimu sendiri
 // @namespace    https://github.com/ISpooferMotion
-// @version      1.1.0
-// @description  Mengunduh isi aset Roblox (termasuk animasi yang dikunci) memakai sesi login di browser-mu, lalu bisa langsung dikirim ke halaman ISpooferMotion untuk di-upload pakai kunci API-mu. Cookie sesimu TIDAK PERNAH dibaca atau dikirim oleh script ini.
+// @version      1.2.0
+// @description  Antrean spoofer ala extension: masukkan banyak asset ID → script mengunduh isinya memakai sesi login di browser-mu → langsung dikirim ke halaman ISpooferMotion untuk di-upload balik pakai kunci API-mu. Cookie sesimu TIDAK PERNAH dibaca atau dikirim oleh script ini.
 // @author       ISpooferMotion
 // @license      GPL-3.0-or-later
 // @match        *://*.roblox.com/*
@@ -12,6 +12,7 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
+// @grant        GM_setClipboard
 // @connect      assetdelivery.roblox.com
 // @connect      www.roblox.com
 // @connect      *
@@ -208,6 +209,47 @@
     const t = Date.parse(v);
     if (!Number.isNaN(t)) return Math.max(0, Math.min(t - Date.now(), 15000));
     return null;
+  }
+
+  /** Ambil semua asset ID dari teks apa pun (spasi/koma/baris baru), unik, maksimal 100. */
+  function parseIdList(text) {
+    const out = [];
+    const seen = Object.create(null);
+    const found = String(text == null ? "" : text).match(/\d{6,}/g) || [];
+    for (const raw of found) {
+      const id = raw.replace(/^0+(?=\d)/, "");
+      if (seen[id]) continue;
+      seen[id] = 1;
+      out.push(id);
+      if (out.length >= 100) break;
+    }
+    return out;
+  }
+
+  /** Serah-terima dari situs ISM lewat URL: ?ism_ids=1,2,3&ism_site=https://situsku */
+  function handoffFromSearch(search) {
+    const out = { ids: [], site: null };
+    const q = String(search == null ? "" : search).replace(/^\?/, "");
+    if (!q) return out;
+    let params;
+    try { params = new URLSearchParams(q); } catch (_) { return out; }
+    out.ids = parseIdList(params.get("ism_ids") || "");
+    const site = params.get("ism_site");
+    if (site && /^https?:\/\//i.test(site)) out.site = site.replace(/\/+$/, "");
+    return out;
+  }
+
+  /** Baris siap tempel untuk plugin Studio: old = new, */
+  function pluginLines(pairs) {
+    return (pairs || [])
+      .filter((p) => p && p.oldId && p.newId)
+      .map((p) => p.oldId + " = " + p.newId + ",")
+      .join("\n");
+  }
+
+  /** Ringkasan singkat untuk log: "3/12 ID" dsb. */
+  function queueLabel(done, total, id) {
+    return "(" + done + "/" + total + ") ID " + id;
   }
 
   /* ===== ISM-FETCH-PURE-END ===== */
@@ -412,6 +454,8 @@
     if (st.userId) fd.append("userId", st.userId);
     if (st.groupId) fd.append("groupId", st.groupId);
     fd.append("displayName", "Spoof " + id);
+    fd.append("via", "userscript"); // ditandai supaya situs bisa menampilkan hasilnya khusus
+    fd.append("oldId", String(id)); // ID asal, supaya keluaran plugin tetap "lama = baru,"
 
     log("Mengirim " + (bytes.length / 1024).toFixed(1) + " KB ke " + st.site + " …");
     const up = await request({ method: "POST", url: endpoint, data: fd, withCredentials: false });
@@ -479,7 +523,9 @@
     return n;
   }
 
-  let panel, logBox, statusEl, inputId, resultBox, resultCode;
+  let panel, logBox, statusEl, inputIds, resultBox, resultText, okCount = 0, failCount = 0;
+  let busy = false;
+  const results = []; // { oldId, newId } atau { oldId, error }
 
   function log(msg) {
     if (!logBox) return;
@@ -489,90 +535,134 @@
     logBox.scrollTop = logBox.scrollHeight;
   }
 
-  function showResult(id) {
+  function showResults() {
     if (!resultBox) return;
-    resultCode.textContent = id;
+    const lines = pluginLines(results.filter((r) => r.newId));
+    if (!lines) return;
+    resultText.value = lines;
     resultBox.classList.add("on");
   }
 
+  function copyResults() {
+    const text = resultText ? resultText.value : "";
+    if (!text) { log("Belum ada ID baru untuk disalin."); return; }
+    const done = () => log("Tersalin. Tempel di jendela Replace Ids pada plugin Studio.");
+    try {
+      if (typeof GM_setClipboard === "function") { GM_setClipboard(text, "text"); done(); return; }
+    } catch (_) {}
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => { resultText.select(); log("Tekan Ctrl+C untuk menyalin."); });
+      return;
+    }
+    resultText.select();
+    log("Tekan Ctrl+C untuk menyalin.");
+  }
+
   function buildUI() {
-    const fab = el("button", { id: "ism-fab", type: "button", textContent: "ISM · ambil aset" });
+    const fab = el("button", { id: "ism-fab", type: "button", textContent: "ISM · spoofer" });
     panel = el("div", { id: "ism-panel" });
-    const title = el("span", { textContent: "ISpooferMotion · ambil di sesimu" });
+    const title = el("span", { textContent: "ISpooferMotion · antrean di sesimu" });
     const close = el("button", { type: "button", textContent: "✕" });
     close.style.flex = "none";
     close.style.width = "28px";
     close.onclick = () => panel.classList.remove("on");
 
-    inputId = el("input", { type: "text", placeholder: "asset ID", inputMode: "numeric" });
+    inputIds = el("textarea", { id: "ism-ids", rows: 3, placeholder: "tempel asset ID di sini — boleh banyak, satu per baris" });
+    inputIds.spellcheck = false;
     statusEl = el("div", { id: "ism-note", textContent: "siap" });
     logBox = el("div", { id: "ism-log" });
     logBox.innerHTML = "";
 
-    const btnDownload = el("button", { type: "button", className: "main", textContent: "Ambil & unduh" });
-    const btnSite = el("button", { type: "button", textContent: "Ambil & kirim ke situs" });
+    const btnSite = el("button", { type: "button", className: "main", textContent: "Ambil & upload (semua)" });
+    const btnDownload = el("button", { type: "button", textContent: "Unduh semua" });
+    const btnCopy = el("button", { type: "button", textContent: "Salin hasil" });
     const btnSettings = el("button", { type: "button", textContent: "Pengaturan" });
 
     resultBox = el("div", { id: "ism-result" });
-    resultBox.appendChild(document.createTextNode("ID baru: "));
-    resultCode = el("code", { textContent: "" });
-    resultBox.appendChild(resultCode);
+    resultText = el("textarea", { id: "ism-result-text", rows: 2, readOnly: true });
+    resultBox.appendChild(el("div", { id: "ism-note", textContent: "ID baru — siap tempel ke Replace Ids:" }));
+    resultBox.appendChild(resultText);
 
     const note = el("div", { id: "ism-note", textContent:
-      "Cookie sesimu tidak dibaca dan tidak dikirim oleh script ini — browser yang melampirkannya ke Roblox. " +
-      "Ke situs hanya dikirim byte file yang sudah jadi." });
+      "Alur sama seperti extension: ambil isi aset memakai sesi di browser ini, lalu upload balik ke Roblox " +
+      "(upload memakai kunci API-mu di situs ISM). Cookie sesimu tidak dibaca dan tidak dikirim oleh script ini." });
 
     panel.appendChild(el("header", {}, [
       title,
       (() => { const w = el("span", {}); w.appendChild(close); return w; })()
     ]));
-    const body = el("div", { className: "body" }, [
-      inputId, el("div", { className: "row" }, [btnDownload, btnSite]), statusEl, logBox, resultBox,
-      el("div", { className: "row" }, [btnSettings]), note
-    ]);
-    panel.appendChild(body);
+    panel.appendChild(el("div", { className: "body" }, [
+      inputIds,
+      el("div", { className: "row" }, [btnSite, btnDownload]),
+      statusEl, logBox, resultBox,
+      el("div", { className: "row" }, [btnCopy, btnSettings]),
+      note
+    ]));
 
     document.body.appendChild(fab);
     document.body.appendChild(panel);
     fab.onclick = () => {
       panel.classList.toggle("on");
       const guess = assetIdFromUrl(location.href);
-      if (guess && !inputId.value) inputId.value = guess;
+      if (guess && !inputIds.value) inputIds.value = guess;
     };
 
-    btnDownload.onclick = () => run("download");
-    btnSite.onclick = () => run("site");
+    btnSite.onclick = () => runQueue("site");
+    btnDownload.onclick = () => runQueue("download");
+    btnCopy.onclick = copyResults;
     btnSettings.onclick = openSettings;
   }
 
-  function currentId() {
-    const v = String(inputId.value || "").trim();
-    if (/^\d{3,}$/.test(v)) return v;
+  /** Isi kotak dari URL yang sedang dibuka kalau kotaknya masih kosong. */
+  function fillFromLocation() {
     const guess = assetIdFromUrl(location.href);
-    if (guess) { inputId.value = guess; return guess; }
-    return null;
+    if (guess && !parseIdList(inputIds.value).length) inputIds.value = guess;
   }
 
-  async function run(mode) {
-    const id = currentId();
-    if (!id) { log("Isi asset ID dulu."); return; }
-    const st = loadSettings();
-    statusEl.textContent = "mengambil " + id + " …";
-    try {
-      const bytes = await fetchAssetBytes(id, st, log);
-      log("Berhasil mengambil " + (bytes.length / 1024).toFixed(1) + " KB dari Roblox (memakai sesi browser ini).");
-      if (mode === "download") {
-        download(bytes, safeFileName(id), log);
-        statusEl.textContent = "selesai (unduh)";
-      } else {
-        const newId = await sendToSite(bytes, id, st, log, statusEl);
-        statusEl.textContent = "selesai (upload)";
-        log("Tempel ID itu ke plugin: " + id + " = " + newId + ",");
-      }
-    } catch (e) {
-      statusEl.textContent = "gagal";
-      log("GAGAL: " + (e && e.message ? e.message : e));
+  async function runOne(id, mode, st) {
+    const bytes = await fetchAssetBytes(id, st, log);
+    log("• " + id + ": " + (bytes.length / 1024).toFixed(1) + " KB dari sesi browser ini");
+    if (mode === "download") {
+      download(bytes, safeFileName(id), log);
+      results.push({ oldId: id, newId: null });
+      return null;
     }
+    const newId = await sendToSite(bytes, id, st, log, statusEl);
+    results.push({ oldId: id, newId });
+    showResults();
+    log("• " + id + " = " + newId);
+    return newId;
+  }
+
+  async function runQueue(mode) {
+    if (busy) { log("Antrean sebelumnya masih jalan — tunggu sebentar."); return; }
+    const ids = parseIdList(inputIds.value);
+    if (!ids.length) { log("Isi minimal satu asset ID (6 angka atau lebih)."); return; }
+    const st = loadSettings();
+    if (mode === "site") {
+      if (!st.site) { log("Alamat situs ISM belum diisi — buka Pengaturan."); return; }
+      if (!st.apiKey) { log("Open Cloud API key belum diisi — buka Pengaturan (sekali saja)."); return; }
+      if (!st.userId && !st.groupId) { log("User ID / Group ID tujuan belum diisi — buka Pengaturan."); return; }
+    }
+    busy = true; okCount = 0; failCount = 0; results.length = 0;
+    log("Antrean mulai: " + ids.length + " ID · mode " + (mode === "site" ? "ambil → upload balik ke Roblox" : "unduh berkas saja"));
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      if (statusEl) statusEl.textContent = queueLabel(i + 1, ids.length, id);
+      try {
+        await runOne(id, mode, st);
+        okCount++;
+      } catch (e) {
+        failCount++;
+        results.push({ oldId: id, error: (e && e.message) ? e.message : String(e) });
+        log("× " + id + " gagal: " + ((e && e.message) ? e.message : e));
+      }
+    }
+    busy = false;
+    const selesai = "selesai · " + okCount + " berhasil, " + failCount + " gagal";
+    if (statusEl) statusEl.textContent = selesai;
+    log("Antrean " + selesai + ".");
+    if (results.some((r) => r.newId)) log('Tekan "Salin hasil" untuk menempel ke jendela Replace Ids di plugin.');
   }
 
   function openSettings() {
@@ -602,6 +692,27 @@
   }
 
   buildUI();
-  inputId.value = assetIdFromUrl(location.href) || "";
-  statusEl.textContent = loadSettings().site ? "siap · " + loadSettings().site : "siap · atur situs dulu di Pengaturan";
+  fillFromLocation();
+
+  /* ---- Serah-terima dari situs ISM: situs membuka roblox.com dengan ?ism_ids=…&ism_site=… ---- */
+  const handoff = handoffFromSearch(location.search);
+  if (handoff.site) {
+    const st0 = loadSettings();
+    if (!st0.site) { saveSettings({ ...st0, site: handoff.site }); log("Alamat situs ISM diisi otomatis: " + handoff.site); }
+  }
+  if (handoff.ids.length) {
+    inputIds.value = handoff.ids.join("\n");
+    panel.classList.add("on");
+    const st1 = loadSettings();
+    log("Menerima " + handoff.ids.length + " ID dari situs ISM" + (handoff.site ? " (" + handoff.site + ")" : "") + ".");
+    if (st1.site && st1.apiKey && (st1.userId || st1.groupId)) {
+      log("Menjalankan otomatis seperti extension: ambil → upload balik.");
+      setTimeout(() => runQueue("site"), 700);
+    } else {
+      log("Buka Pengaturan dulu (isi situs, API key, dan User/Group ID), lalu tekan \"Ambil & upload (semua)\".");
+      statusEl.textContent = "perlu setelan sekali";
+    }
+  } else {
+    statusEl.textContent = loadSettings().site ? "siap · " + loadSettings().site : "siap · atur situs dulu di Pengaturan";
+  }
 })();

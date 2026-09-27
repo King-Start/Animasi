@@ -57,6 +57,35 @@ Buka **Uji ambil saja** dan lihat kode HTTP di kolom error:
 
 Sejak pembaruan ini, tiap baris gagal menampilkan **HTTP status** dan **daftar percobaan** (endpoint + User-Agent + status), dan server mencoba lima User-Agent bergilir seperti aplikasi V2. `/api/health` juga menampilkan **IP keluar server** (`egressIp`) supaya bisa dicek kalau Roblox memblokir IP-nya.
 
+## Mode ekstensi: ID masuk → diunduh → di-upload balik (satu alur)
+
+Ini alur yang sama dengan extension spoofer, tapi tanpa memasang extension:
+
+```
+kolom ID di situs  →  tombol "Jalankan ID di kolom kiri (sesi browser)"
+   →  browser membuka roblox.com dengan ?ism_ids=…&ism_site=…
+   →  userscript otomatis: unduh isi aset memakai SESI LOGIN DI BROWSER-MU
+   →  byte dikirim ke situs → situs upload balik ke Roblox (pakai API key-mu)
+   →  ID baru muncul di panel "Mode ekstensi" dan siap disalin ke Replace Ids
+```
+
+Sekali pasang saja: buka situs → panel **Mode ekstensi** → klik `ism-fetch.user.js` (atau di
+Tampermonkey: *Tambah script baru* lalu tempel isinya). Setelah itu **alamat situs terisi otomatis**
+dari tautan situs; kamu hanya perlu mengisi API key + User/Group ID sekali di Pengaturan userscript.
+
+Banyak ID sekaligus:
+
+1. Tempel semua ID di kolom kiri situs (satu per baris, boleh hasil salin dari plugin).
+2. Tekan **Jalankan ID di kolom kiri (sesi browser)** — tab Roblox terbuka, panel userscript muncul
+   dan menjalankan antreannya sendiri (maksimal 60 ID per sekali jalan).
+3. Tiap ID yang selesai langsung tampil di panel **Mode ekstensi** di situs. Tekan
+   **Salin semua (format plugin)** → tempel di jendela **Replace Ids** milik plugin Studio.
+
+Catatan jujur soal cara kerjanya: **upload tetap memakai Open Cloud API key** — sama seperti
+aplikasi ISpooferMotion V2 (`apply_upload_auth` di V2 memang mengirim `x-api-key`). Yang memakai
+sesi browser adalah **langkah mengunduh**, karena itulah bagian yang tidak boleh dilakukan server.
+Cookie tidak pernah dikirim ke situs mana pun; hanya browser-mu yang melampirkannya ke Roblox.
+
 ## Kalau situs bilang "gagal" padahal asetnya sudah masuk
 
 Kasus ini nyata: upload kadang **berhasil** di Roblox, tapi situs **belum sempat** menerima

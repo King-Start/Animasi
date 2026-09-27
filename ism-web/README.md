@@ -122,7 +122,7 @@ curl -s localhost:8787/api/jobs -H 'content-type: application/json' -d '{
 node ism-web/tests/api.test.mjs
 ```
 
-232 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
+242 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
 
 - alur lengkap ID → byte → upload → ID baru, termasuk upload ke grup dan operasi async
 - **bukti byte identik**: SHA-256 byte yang diterima endpoint upload dibandingkan dengan byte dari CDN
@@ -147,6 +147,9 @@ node ism-web/tests/api.test.mjs
   403 halaman HTML = IP diblokir · 429 = batas per-IP
 - **laporan job** (`GET /api/jobs/{id}/report`, juga tersimpan di `REPORT_DIR`) berisi status per
   item, HTTP status, pesan asli Roblox, sha256, operationId, dan hint — dijamin **tanpa kredensial**
+- **serah-terima sesi browser** (`GET /api/handoff`): job yang datang dari userscript
+  (`via=userscript` + `oldId`) dirangkum jadi keluaran `lama = baru,` siap tempel; job dari daftar
+  ID biasa tidak tercampur, dan upload manual tanpa ID asal tidak menambah pasangan palsu
 
 ---
 
