@@ -18,10 +18,19 @@ export const DEFAULTS = {
   assetDeliveryBase: "https://assetdelivery.roblox.com",
   oauthBase: "https://apis.roblox.com/oauth/v1",
   usersBase: "https://users.roblox.com",
+  // Aset publik yang dipakai untuk menguji kunci (read-only, tidak mengubah apa pun)
+  probeAssetId: "180435571",
   maxAssetBytes: 20 * 1024 * 1024, // batas 20 MB dari dokumentasi Open Cloud
   userAgent: "ISpooferMotion-Web/1.0 (+https://github.com/ISpooferMotion)",
-  allowedAssetHosts: [] // tambahan host yang diizinkan; default hanya host Roblox
+  allowedAssetHosts: [], // tambahan host yang diizinkan; default hanya host Roblox
+  probeAssetId: "180435571" // aset publik untuk uji fungsi kunci
 };
+
+/** Karakter non-ASCII pertama di sebuah kunci (atau null kalau semua ASCII). */
+export function firstNonAscii(value) {
+  const m = String(value == null ? "" : value).match(/[^\x20-\x7E]/);
+  return m ? m[0] : null;
+}
 
 export class RobloxError extends Error {
   constructor(message, info = {}) {
@@ -226,7 +235,12 @@ export async function fetchUserInfo(cfg, accessToken) {
  * sudah cukup bikin Roblox menolak dengan "not provided in a valid format".
  */
 export function normalizeApiKey(raw) {
+  // Catatan: \s di JavaScript TIDAK mencakup U+200B (zero width space), U+200C/U+200D,
+  // U+2060, dan U+FEFF. Karakter itu sering ikut tersalin dari halaman web / HP, dan
+  // kalau lolos ke header HTTP, fetch langsung melempar "Cannot convert argument to a
+  // ByteString" (bukan pesan Roblox). Jadi dibuang eksplisit di sini.
   return String(raw == null ? "" : raw)
+    .replace(/[\u200B-\u200F\u2060\uFEFF]/g, "")
     .trim()
     .replace(/^["'`]+|["'`]+$/g, "")
     .replace(/\s+/g, "");
@@ -287,6 +301,14 @@ export function createRobloxClient(config = {}) {
     if (auth.kind === "apikey") {
       if (!auth.apiKey || String(auth.apiKey).length < 8) {
         throw new RobloxError("API key kosong atau terlalu pendek.", { code: 401 });
+      }
+      const bad = firstNonAscii(normalizeApiKey(auth.apiKey));
+      if (bad) {
+        throw new RobloxError(
+          `Kunci API memuat karakter non-ASCII (${JSON.stringify(bad)}) sehingga tidak bisa dikirim ke Roblox. ` +
+            "Copy ulang kunci dari Creator Dashboard.",
+          { code: 401 }
+        );
       }
       return { "x-api-key": auth.apiKey };
     }
@@ -523,100 +545,293 @@ export function createRobloxClient(config = {}) {
    * User ID / Group ID yang diisi? Hasilnya daftar temuan yang bisa langsung
    * ditindaklanjuti, bukan cuma "gagal".
    */
+  /**
+   * Statistik bentuk kunci yang benar-benar diterima server.
+   * SENGAJA hanya mengembalikan hitungan & penanda — bukan kuncinya.
+   */
+  function describeKeyShape(raw) {
+    const s = String(raw == null ? "" : raw);
+    const cleaned = normalizeApiKey(s);
+    const hiddenList = s.match(/[\u00A0\u200B-\u200F\u2028\u2029\u2060\uFEFF]/g) || [];
+    const nonAsciiList = s.match(/[^\x09\x0A\x0D\x20-\x7E]/g) || [];
+    const spaces = (s.match(/\s/g) || []).length;
+    const allowed = /^[A-Za-z0-9+/=_-]+$/;
+    const odd = [...new Set(cleaned.split("").filter((c) => !/[A-Za-z0-9+/=_-]/.test(c)))];
+    const stats = {
+      rawLength: s.length,
+      length: cleaned.length,
+      hiddenChars: hiddenList.length,
+      nonAscii: nonAsciiList.length,
+      spaces,
+      odd,
+      trimmed: s !== cleaned,
+      asciiOnly: /^[\x20-\x7E]*$/.test(cleaned),
+      alphabetOk: allowed.test(cleaned)
+    };
+    return { cleaned, stats };
+  }
+
+  function rawMessage(res) {
+    const b = res && res.body;
+    if (!b) return "HTTP " + ((res && res.status) || 0);
+    if (typeof b === "string") return b;
+    if (b.message) return String(b.message);
+    if (b.errors && b.errors[0] && b.errors[0].message) return String(b.errors[0].message) || "HTTP " + res.status;
+    return "HTTP " + res.status;
+  }
+
+  /** Satu panggilan uji ke API Roblox memakai kunci user. */
+  async function runProbe({ id, label, url, apiKey }) {
+    try {
+      const res = await doFetch(url, {
+        method: "GET",
+        headers: { "x-api-key": apiKey, accept: "application/json" }
+      });
+      const body = await res.json().catch(() => null);
+      const out = { id, label, status: res.status, ok: res.ok, message: rawMessage({ status: res.status, body }) };
+      return out;
+    } catch (e) {
+      return { id, label, status: 0, ok: false, message: e && e.message ? e.message : "gagal konek" };
+    }
+  }
+
+  /**
+   * Uji fungsi kunci: ini jalur auth yang sama dengan upload, jadi hasilnya
+   * jauh lebih bisa dipercaya daripada endpoint metadata.
+   */
+  async function verifyKey({ apiKey, userId } = {}) {
+    const key = normalizeApiKey(apiKey);
+    if (!key) return [];
+    const base = cfg.apisBase.replace(/\/$/, "");
+    const out = [];
+    out.push(
+      await runProbe({
+        id: "asset-read",
+        label: `baca aset ${cfg.probeAssetId} (Assets API)`,
+        url: `${base}/assets/v1/assets/${cfg.probeAssetId}`,
+        apiKey: key
+      })
+    );
+    if (userId) {
+      out.push(
+        await runProbe({
+          id: "user-read",
+          label: `baca profil user ${userId} (Open Cloud v2)`,
+          url: `${base}/cloud/v2/users/${encodeURIComponent(userId)}`,
+          apiKey: key
+        })
+      );
+    }
+    return out;
+  }
+
   async function checkKey({ apiKey, userId, groupId } = {}) {
     const findings = [];
     const key = normalizeApiKey(apiKey);
+    const shape = describeKeyShape(apiKey);
     if (!key) {
-      return { ok: false, findings: [{ level: "error", message: "Kunci API masih kosong." }] };
+      return {
+        ok: false,
+        verdict: "empty",
+        findings: [{ level: "error", message: "Kunci API masih kosong." }],
+        probes: [],
+        keyShape: shape.stats
+      };
     }
-    if (key.length < 30) {
+
+    // (a) bentuk kunci — ini yang biasanya bikin "not provided in a valid format"
+    if (shape.stats.hiddenChars > 0) {
       findings.push({
         level: "warn",
-        message: `Panjang kunci hanya ${key.length} karakter. Kunci Roblox jauh lebih panjang, jadi kemungkinan tersalin tidak lengkap.`
+        message:
+          `Kunci memuat ${shape.stats.hiddenChars} karakter tak terlihat (spasi nol-lebar / NBSP). ` +
+          "Aku sudah membuangnya otomatis, tapi ini tanda kunci tersalin dari tempat yang salah."
+      });
+    }
+    if (shape.stats.nonAscii > 0 && shape.stats.nonAscii !== shape.stats.hiddenChars) {
+      findings.push({
+        level: "error",
+        message: `Ada ${shape.stats.nonAscii} karakter non-ASCII di kunci. Kunci Roblox hanya berisi huruf, angka, dan + / = - _ .`
+      });
+    }
+    if (shape.stats.odd.length) {
+      findings.push({
+        level: "error",
+        message:
+          `Kunci memuat karakter yang tidak pernah ada di kunci Roblox: ${shape.stats.odd
+            .map((c) => JSON.stringify(c))
+            .join(", ")}. Ini tanda tersalin tidak lengkap atau kena format ulang.`
+      });
+    }
+    if (shape.stats.trimmed) {
+      findings.push({
+        level: "info",
+        message: `Ada spasi/kutip di ujung kunci (mentah ${shape.stats.rawLength} karakter → bersih ${shape.stats.length}). Sudah dibersihkan otomatis.`
       });
     }
 
+    // Kalau masih ada karakter non-ASCII, permintaan HTTP-nya sendiri yang gagal
+    // (fetch melempar ByteString error), jadi tidak usah diteruskan ke Roblox.
+    const badChar = firstNonAscii(key);
+    if (badChar) {
+      findings.unshift({
+        level: "error",
+        message:
+          `Kunci memuat karakter yang tidak pernah ada di kunci Roblox: ${JSON.stringify(badChar)} ` +
+          `(posisi ke-${key.indexOf(badChar) + 1} dari ${key.length}). Karakter seperti itu tanda kunci tersalin ` +
+          "dari tempat yang salah atau kena format ulang. Copy ulang dari Creator Dashboard."
+      });
+      findings.push({
+        level: "info",
+        message: 'Di halaman ini gunakan tombol "Tempel dari clipboard", bukan memilih teks manual.'
+      });
+      return {
+        ok: false,
+        verdict: "reject",
+        findings,
+        probes: [],
+        keyShape: shape.stats,
+        profile: null,
+        key: null,
+        scopes: []
+      };
+    }
+
+    // (b) uji nyata: pakai kunci itu untuk memanggil API Roblox
+    const probes = await verifyKey({ apiKey: key, userId });
+    const anyOk = probes.some((p) => p.ok);
+    const refused = probes.filter((p) => p.status === 401);
+    const reached = probes.some((p) => p.status > 0);
+    for (const p of probes) {
+      if (p.ok) findings.push({ level: "ok", message: `Uji ${p.label}: berhasil (HTTP ${p.status}).` });
+      else if (p.status === 401) findings.push({ level: "error", message: `Uji ${p.label}: ditolak Roblox — "${p.message}".` });
+      else if (p.status === 403) findings.push({ level: "warn", message: `Uji ${p.label}: HTTP 403 "${p.message}" — kunci tidak sampai ke Roblox.` });
+      else if (p.status === 0) findings.push({ level: "warn", message: `Uji ${p.label}: tidak bisa dihubungi — ${p.message}.` });
+      else findings.push({ level: "warn", message: `Uji ${p.label}: HTTP ${p.status} ${p.message || ""}`.trim() });
+    }
+
+    // (c) metadata kunci (scope, masa berlaku, pemilik)
     const intro = await introspectKey(key);
-    const raw = (intro.body && (intro.body.message || (intro.body.errors && intro.body.errors[0] && intro.body.errors[0].message))) || ("HTTP " + intro.status);
+    const raw = rawMessage(intro);
+    let meta = null;
+    let metaRejected = null;
+    if (intro.ok && intro.body) meta = intro.body;
+    else if (intro.status === 400 && /valid format/i.test(raw)) metaRejected = raw;
+    else if (intro.status === 401 || intro.status === 403) metaRejected = raw;
+    else findings.push({ level: "warn", message: `Pemeriksaan detail kunci gagal: ${raw}` });
 
-    if (intro.status === 400 && /valid format/i.test(raw)) {
-      findings.push({
-        level: "error",
-        message: 'Roblox menjawab: "API Key is not provided in a valid format". Copy ulang seluruh kunci dari Creator Dashboard, pastikan tidak ada spasi atau kutip yang ikut tersalin.'
-      });
-      return { ok: false, findings };
-    }
-    if (intro.status === 401 || intro.status === 403) {
-      findings.push({ level: "error", message: `Kunci ditolak Roblox: ${raw}. Kunci salah, sudah dicabut, atau IP server ini tidak ada di daftar izin.` });
-      findings.push({ level: "info", message: "Buat/copy ulang di create.roblox.com, Credentials, API Keys." });
-      return { ok: false, findings };
-    }
-    if (!intro.ok || !intro.body) {
-      findings.push({ level: "error", message: "Tidak bisa memeriksa kunci: " + raw });
-      return { ok: false, findings };
-    }
-
-    const info = intro.body;
-    const scopes = Array.isArray(info.scopes) ? info.scopes : [];
-    const assetScope = scopes.find((sc) => /^asset$/i.test(String(sc.name || "")));
-    const ops = ((assetScope && assetScope.operations) || []).map(String);
-    const hasWrite = ops.some((o) => /write/i.test(o));
-    const ownerId = info.authorizedUserId != null ? String(info.authorizedUserId) : null;
-
-    if (info.enabled === false) {
-      findings.push({ level: "error", message: "Kunci ini sedang dinonaktifkan di Creator Dashboard (Enabled: false)." });
-    }
-    if (info.expired) {
-      findings.push({ level: "error", message: "Kunci ini sudah kedaluwarsa" + (info.expirationTimeUtc ? " (" + info.expirationTimeUtc + ")" : "") + ". Buat kunci baru." });
-    }
-    if (!assetScope) {
-      findings.push({ level: "error", message: 'Kunci belum diberi API "Assets". Di Access Permissions: Add API System, pilih Assets.' });
-    } else if (!hasWrite) {
-      findings.push({
-        level: "error",
-        message: `API Assets sudah ada, tapi operasi Write belum dicentang (yang ada: ${ops.join(", ") || "kosong"}). Upload butuh Read + Write.`
-      });
-    }
-
-    if (groupId) {
-      const gids = ((assetScope && assetScope.groupIds) || []).map(String);
-      if (!gids.length) {
+    if (metaRejected) {
+      if (anyOk) {
         findings.push({
-          level: "error",
-          message: "Kunci tidak memberi akses grup mana pun, jadi tidak bisa upload ke Group ID ini. Tambahkan grupnya di Access Permissions, atau kosongkan Group ID dan pakai User ID akunmu."
+          level: "info",
+          message:
+            `Pemeriksaan detail kunci menjawab "${metaRejected}", tapi uji nyata ke Roblox berhasil — kuncinya jalan. ` +
+            "Daftar scope di bawah mungkin tidak lengkap."
         });
-      } else if (!(gids.includes("*") || gids.includes(String(groupId)))) {
+      } else {
         findings.push({
           level: "error",
-          message: `Kunci tidak punya akses ke grup ${groupId} (yang diizinkan: ${gids.join(", ")}). Tambahkan grup itu di key-nya, atau ganti target.`
+          message:
+            `Roblox menjawab "${metaRejected}". Kunci yang aku terima panjangnya ${shape.stats.length} karakter` +
+            (shape.stats.hiddenChars ? ` (${shape.stats.hiddenChars} karakter tak terlihat sudah dibuang)` : "") +
+            ", dan Roblox tidak mengenalinya sebagai kunci yang pernah ia terbitkan."
+        });
+        findings.push({
+          level: "info",
+          message:
+            'Cara paling aman: di Creator Dashboard tekan tombol Copy pada kuncinya (jangan blok-teks manual, apalagi di HP), lalu tempel di sini pakai tombol "Tempel dari clipboard".'
+        });
+        findings.push({
+          level: "info",
+          message: "Kalau kamu menekan Regenerate / membuat kunci baru setelah menyalin, teks lama langsung mati — copy ulang yang baru."
         });
       }
-    } else if (userId) {
-      if (ownerId && ownerId !== String(userId)) {
-        const prof = await getUserProfile(ownerId);
+    }
+
+    // (d) isi metadata: scope, masa berlaku, kecocokan pemilik
+    let profile = null;
+    const scopes = meta && Array.isArray(meta.scopes) ? meta.scopes : [];
+    if (meta) {
+      const assetScope = scopes.find((sc) => /^asset$/i.test(String(sc.name || "")));
+      const ops = ((assetScope && assetScope.operations) || []).map(String);
+      const hasWrite = ops.some((o) => /write/i.test(o));
+      const ownerId = meta.authorizedUserId != null ? String(meta.authorizedUserId) : null;
+
+      if (meta.enabled === false) findings.push({ level: "error", message: "Kunci ini sedang dinonaktifkan di Creator Dashboard (Enabled: false)." });
+      if (meta.expired) {
         findings.push({
           level: "error",
-          message: `User ID tujuan (${userId}) bukan pemilik kunci ini. Kunci ini milik User ID ${ownerId}${prof && prof.name ? " (@" + prof.name + ")" : ""}. Ganti kolom User ID menjadi ${ownerId}.`
+          message: "Kunci ini sudah kedaluwarsa" + (meta.expirationTimeUtc ? " (" + meta.expirationTimeUtc + ")" : "") + ". Buat kunci baru."
         });
       }
-    } else {
+      if (!assetScope) {
+        findings.push({ level: "error", message: 'Kunci belum diberi API "Assets". Di Access Permissions: Add API System, pilih Assets.' });
+      } else if (!hasWrite) {
+        findings.push({
+          level: "error",
+          message: `API Assets sudah ada, tapi operasi Write belum dicentang (yang ada: ${ops.join(", ") || "kosong"}). Upload butuh Read + Write.`
+        });
+      }
+
+      if (groupId) {
+        const gids = ((assetScope && assetScope.groupIds) || []).map(String);
+        if (!gids.length) {
+          findings.push({
+            level: "error",
+            message:
+              "Kunci tidak memberi akses grup mana pun, jadi tidak bisa upload ke Group ID ini. Tambahkan grupnya di Access Permissions, atau kosongkan Group ID dan pakai User ID akunmu."
+          });
+        } else if (!(gids.includes("*") || gids.includes(String(groupId)))) {
+          findings.push({
+            level: "error",
+            message: `Kunci tidak punya akses ke grup ${groupId} (yang diizinkan: ${gids.join(", ")}). Tambahkan grup itu di key-nya, atau ganti target.`
+          });
+        }
+      } else if (userId) {
+        if (ownerId && ownerId !== String(userId)) {
+          const prof = await getUserProfile(ownerId);
+          findings.push({
+            level: "error",
+            message:
+              `User ID tujuan (${userId}) bukan pemilik kunci ini. Kunci ini milik User ID ${ownerId}` +
+              (prof && prof.name ? " (@" + prof.name + ")" : "") +
+              `. Ganti kolom User ID menjadi ${ownerId}.`
+          });
+        }
+      }
+      profile = ownerId ? await getUserProfile(ownerId) : null;
+    } else if (!groupId && !userId) {
       findings.push({ level: "info", message: "Isi User ID atau Group ID tujuan supaya kecocokan kunci bisa diperiksa." });
     }
 
-    const profile = ownerId ? await getUserProfile(ownerId) : null;
-    const ok = !findings.some((f) => f.level === "error");
-    if (ok) findings.unshift({ level: "ok", message: "Kunci valid dan siap dipakai untuk upload." });
+    // (e) putusan akhir
+    const verdict = anyOk ? "ok" : refused.length ? "reject" : reached ? "unknown" : "offline";
+    if (verdict === "ok") {
+      findings.unshift({ level: "ok", message: "Kunci DITERIMA Roblox — uji baca aset berhasil, jalur auth-nya sama dengan saat upload." });
+    } else if (verdict === "reject") {
+      findings.unshift({ level: "error", message: "Kunci DITOLAK Roblox: kunci ini tidak dikenali. Copy ulang dari dashboard, atau buat kunci baru." });
+    } else if (verdict === "unknown") {
+      findings.unshift({ level: "warn", message: "Roblox menjawab, tapi jawabannya tidak jelas. Tunggu sebentar lalu coba lagi." });
+    } else {
+      findings.unshift({ level: "error", message: "Tidak bisa menghubungi Roblox dari server ini. Cek koneksi/Rate limit server, lalu ulangi." });
+    }
 
+    const hasError = findings.some((f) => f.level === "error");
     return {
-      ok,
+      ok: verdict === "ok" && !hasError,
+      verdict,
       findings,
+      probes,
+      keyShape: shape.stats,
       profile,
-      key: {
-        enabled: info.enabled !== false,
-        expired: !!info.expired,
-        expiresAt: info.expirationTimeUtc || null,
-        name: info.name || null
-      },
+      key: meta
+        ? {
+            enabled: meta.enabled !== false,
+            expired: !!meta.expired,
+            expiresAt: meta.expirationTimeUtc || null,
+            name: meta.name || null
+          }
+        : null,
       scopes: scopes.map((sc) => ({
         name: sc.name,
         operations: sc.operations,
@@ -630,9 +845,12 @@ export function createRobloxClient(config = {}) {
     config: cfg,
     resolveAsset,
     introspectKey,
+    describeKeyShape,
+    verifyKey,
     getUserProfile,
     checkKey,
     normalizeApiKey,
+    firstNonAscii,
     explainError,
     downloadAsset,
     uploadAsset,

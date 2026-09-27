@@ -110,6 +110,15 @@
   .finding.ok .mk{color:var(--green)}
   .finding.info .mk{color:var(--cyan)}
   .keymeta{margin-top:10px;font:11.8px/1.7 var(--mono);color:var(--mut-2);word-break:break-word}
+  .verdict{margin:2px 0 8px;font:600 12.5px/1.4 var(--mono);letter-spacing:.02em}
+  .verdict.ok{color:var(--green)} .verdict.err{color:var(--red)} .verdict.warn{color:var(--amber)}
+  .chip{display:inline-block;padding:3px 7px;margin:2px 4px 0 0;border-radius:6px;font:11.5px/1.5 var(--mono);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10)}
+  .chip.ok{border-color:rgba(80,220,140,.45);color:#9ff0c0}
+  .chip.err{border-color:rgba(255,110,110,.45);color:#ffb3b3}
+  .keyrow{display:flex;gap:8px;align-items:center}
+  .keyrow input{flex:1;min-width:0}
+  .keyshape{margin-top:6px;font:11.8px/1.6 var(--mono);color:var(--mut-2);word-break:break-all}
+  .keyshape .ok{color:var(--green)} .keyshape .bad{color:var(--red)} .keyshape .warn{color:var(--amber)}
   .errhint{font-size:11.6px;color:#fde68a;white-space:normal;max-width:340px;display:block}
   @media(max-width:1000px){.cols{grid-template-columns:1fr}}
 </style>
@@ -241,7 +250,12 @@ https://www.roblox.com/library/1234567893/apa-pun
 
       <div id="authKey">
         <label class="f" for="apiKey">Open Cloud API key</label>
-        <input id="apiKey" type="password" autocomplete="off" placeholder="kunci API kamu">
+        <div class="keyrow">
+          <input id="apiKey" type="password" autocomplete="new-password" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="kunci API kamu">
+          <button class="btn sm ghost" id="revealKey" type="button" aria-pressed="false">Lihat</button>
+          <button class="btn sm ghost" id="pasteKey" type="button">Tempel</button>
+        </div>
+        <div class="keyshape" id="keyShape">kunci belum diisi</div>
         <div class="row">
           <button class="btn sm" id="checkKeyBtn" type="button">Cek kunci dulu</button>
           <label class="chk"><input type="checkbox" id="rememberKey"> ingat selama server hidup (di memori saja)</label>
@@ -740,10 +754,37 @@ https://www.roblox.com/library/1234567893/apa-pun
   /* ---- cek kunci: diagnosa tanpa upload ---- */
   function renderFindings(box, res) {
     var marks = { error: "\u2717", warn: "!", ok: "\u2713", info: "i" };
+    var head = "";
+    var vmap = {
+      ok: ["ok", "\u2713 KUNCI DITERIMA ROBLOX"],
+      reject: ["err", "\u2717 KUNCI DITOLAK ROBLOX"],
+      offline: ["err", "\u2717 SERVER TIDAK BISA MENGHUBUNGI ROBLOX"],
+      unknown: ["warn", "! HASIL BELUM JELAS"],
+      empty: ["warn", "! KUNCI MASIH KOSONG"]
+    };
+    if (res.verdict && vmap[res.verdict]) {
+      head = '<div class="verdict ' + vmap[res.verdict][0] + '">' + vmap[res.verdict][1] + "</div>";
+    }
     var html = res.findings.map(function (f) {
       return '<div class="finding ' + (f.level === "error" ? "err" : f.level) + '">' +
         '<span class="mk">' + (marks[f.level] || "-") + '</span><span>' + esc(f.message) + "</span></div>";
     }).join("");
+    if (res.keyShape) {
+      var ks = res.keyShape;
+      var sh = ["panjang kunci yang diterima server: <b>" + ks.length + " karakter</b>"];
+      if (ks.hiddenChars) sh.push('<span class="warn">' + ks.hiddenChars + " karakter tak terlihat (sudah dibuang)</span>");
+      if (ks.nonAscii && ks.nonAscii !== ks.hiddenChars) sh.push('<span class="bad">' + ks.nonAscii + " karakter non-ASCII</span>");
+      if (ks.odd && ks.odd.length) sh.push('<span class="bad">karakter aneh: ' + esc(ks.odd.join(" ")) + "</span>");
+      if (ks.trimmed) sh.push("ada spasi/kutip di ujung");
+      if (ks.alphabetOk) sh.push('<span class="ok">huruf/angka normal</span>');
+      html += '<div class="keymeta">' + sh.join(" · ") + "</div>";
+    }
+    if (res.probes && res.probes.length) {
+      html += '<div class="keymeta">' + res.probes.map(function (p) {
+        return '<span class="chip ' + (p.ok ? "ok" : "err") + '">' + esc(p.label) + " \u2192 HTTP " + p.status +
+          (p.message ? ": " + esc(p.message) : "") + "</span>";
+      }).join(" ") + "</div>";
+    }
     if (res.profile || res.key) {
       var bits = [];
       if (res.profile) bits.push("akun pemilik kunci: @" + (res.profile.name || "?") + " (User ID " + res.profile.id + ")");
@@ -756,8 +797,68 @@ https://www.roblox.com/library/1234567893/apa-pun
       if (bits.length) html += '<div class="keymeta">' + esc(bits.join(" · ")) + "</div>";
     }
     box.className = "notice " + (res.ok ? "ok" : "err");
-    box.innerHTML = html;
+    box.innerHTML = head + html;
   }
+
+  /* ---- bentuk kunci yang benar-benar ada di kolom input (dihitung di browser,
+          tidak pernah dikirim ke server) ---- */
+  function keyShapeReport(raw) {
+    var s = raw == null ? "" : String(raw);
+    var cleaned = s.trim().replace(/^["'`]+|["'`]+$/g, "").replace(/\s+/g, "");
+    var hidden = (s.match(/[\u00A0\u200B-\u200F\u2028\u2029\u2060\uFEFF]/g) || []).length;
+    var nonAscii = (s.match(/[^\x09\x0A\x0D\x20-\x7E]/g) || []).length;
+    var odd = [];
+    cleaned.split("").forEach(function (c) {
+      if (!/[A-Za-z0-9+/=_-]/.test(c) && odd.indexOf(c) < 0) odd.push(c);
+    });
+    return {
+      rawLength: s.length, length: cleaned.length, hidden: hidden, nonAscii: nonAscii, odd: odd,
+      trimmed: s !== cleaned, cleaned: cleaned
+    };
+  }
+  function maskKey(cleaned) {
+    if (!cleaned) return "";
+    if (cleaned.length <= 12) return cleaned.slice(0, 2) + "\u2026" + cleaned.slice(-2);
+    return cleaned.slice(0, 6) + "\u2026" + cleaned.slice(-4);
+  }
+  function renderKeyShape() {
+    var r = keyShapeReport($("#apiKey").value);
+    var box = $("#keyShape");
+    if (!r.cleaned) { box.className = "keyshape"; box.textContent = "kunci belum diisi"; return; }
+    var bits = ['<b>' + r.length + "</b> karakter", "contoh: <b>" + esc(maskKey(r.cleaned)) + "</b>"];
+    var bad = false;
+    if (r.hidden) { bits.push('<span class="warn">' + r.hidden + " karakter tak terlihat \u2014 akan dibuang otomatis</span>"); }
+    if (r.nonAscii) { bits.push('<span class="bad">' + r.nonAscii + " karakter non-ASCII</span>"); bad = true; }
+    if (r.odd.length) { bits.push('<span class="bad">karakter aneh: ' + esc(r.odd.join(" ")) + "</span>"); bad = true; }
+    if (r.trimmed) { bits.push("ada spasi/kutip di ujung"); }
+    if (!bad && !r.hidden) bits.push('<span class="ok">bentuknya wajar</span>');
+    box.className = "keyshape";
+    box.innerHTML = bits.join(" \u00b7 ");
+  }
+  $("#apiKey").addEventListener("input", renderKeyShape);
+  $("#revealKey").addEventListener("click", function () {
+    var inp = $("#apiKey");
+    var show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    this.setAttribute("aria-pressed", String(show));
+    this.textContent = show ? "Sembunyikan" : "Lihat";
+  });
+  $("#pasteKey").addEventListener("click", function () {
+    var self = this;
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      logLine("browser ini tidak mengizinkan baca clipboard \u2014 tempel manual ke kolom kunci", "warn");
+      return;
+    }
+    navigator.clipboard.readText().then(function (txt) {
+      $("#apiKey").value = (txt || "").trim();
+      renderKeyShape();
+      var r = keyShapeReport($("#apiKey").value);
+      logLine("kunci ditempel dari clipboard: " + r.length + " karakter", r.cleaned ? "ok" : "warn");
+    }, function () {
+      logLine("tidak diizinkan membaca clipboard \u2014 ketuk kolom kunci lalu pilih Tempel", "warn");
+    });
+  });
+  renderKeyShape();
 
   $("#checkKeyBtn").addEventListener("click", function () {
     var key = $("#apiKey").value.trim();
@@ -781,11 +882,12 @@ https://www.roblox.com/library/1234567893/apa-pun
         return;
       }
       renderFindings(box, r.body);
-      if (r.body.ok) logLine("cek kunci: valid dan siap dipakai", "ok");
-      else {
-        logLine("cek kunci: ada " + r.body.findings.filter(function (f) { return f.level === "error"; }).length + " masalah yang harus dibetulkan", "warn");
-        r.body.findings.filter(function (f) { return f.level === "error"; }).forEach(function (f) { logLine(f.message, "err"); });
-      }
+      if (r.body.verdict === "ok") logLine("cek kunci: DITERIMA Roblox" + (r.body.ok ? " \u2014 valid, siap upload" : " (masih ada catatan di bawah)"), "ok");
+      else if (r.body.verdict === "reject") logLine("cek kunci: DITOLAK Roblox \u2014 kunci tidak dikenali", "err");
+      else if (r.body.verdict === "offline") logLine("cek kunci: server tidak bisa menghubungi Roblox", "err");
+      var errs = r.body.findings.filter(function (f) { return f.level === "error"; });
+      if (errs.length) logLine("cek kunci: " + errs.length + " hal yang harus dibetulkan", "warn");
+      errs.forEach(function (f) { logLine(f.message, "err"); });
       refreshRun();
     }, function () {
       $("#checkKeyBtn").disabled = false;

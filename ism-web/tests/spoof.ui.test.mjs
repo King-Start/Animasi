@@ -52,7 +52,11 @@ let healthBody = {
 let meBody = { loggedIn: false };
 let jobSnapshot = null;
 let checkKeyBody = {
-  ok: false, usingServerKey: false,
+  ok: false, usingServerKey: false, verdict: "reject",
+  probes: [
+    { id: "asset-read", label: "baca aset 180435571 (Assets API)", status: 401, ok: false, message: "Invalid API Key" }
+  ],
+  keyShape: { rawLength: 41, length: 40, hiddenChars: 1, nonAscii: 2, spaces: 0, odd: [], trimmed: true, asciiOnly: false, alphabetOk: true },
   findings: [
     { level: "error", message: "API Assets sudah ada, tapi operasi Write belum dicentang (yang ada: read). Upload butuh Read + Write." },
     { level: "info", message: "Buka create.roblox.com untuk memperbaiki." }
@@ -239,9 +243,22 @@ heading("7b. Tombol 'Cek kunci' (diagnosa)");
   ok("scope kunci ditampilkan", /asset\[read\]/.test(box.textContent), box.textContent);
   ok("temuan error juga masuk ke log", /Write belum dicentang/.test($("#log").textContent));
 
+  ok("putusan ditampilkan paling atas di panel", /KUNCI DITOLAK ROBLOX/.test(box.textContent), box.textContent.slice(0, 80));
+  ok("hasil uji nyata ke Roblox ditampilkan sebagai chip",
+    /baca aset 180435571/.test(box.textContent) && /HTTP 401/.test(box.textContent) && /Invalid API Key/.test(box.textContent),
+    box.textContent);
+  ok("bentuk kunci yang diterima server dilaporkan",
+    /panjang kunci yang diterima server/.test(box.textContent) && /40 karakter/.test(box.textContent),
+    box.textContent);
+  ok("karakter tak terlihat & non-ASCII ditandai", /tak terlihat/.test(box.innerHTML) && /non-ASCII/.test(box.innerHTML), box.innerHTML.slice(0, 160));
+
   // sekarang skenario kunci sehat
   checkKeyBody = {
-    ok: true, usingServerKey: true,
+    ok: true, usingServerKey: true, verdict: "ok",
+    probes: [
+      { id: "asset-read", label: "baca aset 180435571 (Assets API)", status: 200, ok: true, message: "HTTP 200" }
+    ],
+    keyShape: { rawLength: 40, length: 40, hiddenChars: 0, nonAscii: 0, spaces: 0, odd: [], trimmed: false, asciiOnly: true, alphabetOk: true },
     findings: [{ level: "ok", message: "Kunci valid dan siap dipakai untuk upload." }],
     profile: { id: "1234567", name: "TesterISM", displayName: "Tester ISM" },
     key: { enabled: true, expired: false, expiresAt: null, name: "ISM_TEST" },
@@ -252,7 +269,30 @@ heading("7b. Tombol 'Cek kunci' (diagnosa)");
   ok("kunci sehat → panel hijau", /notice ok/.test($("#keyCheck").className), $("#keyCheck").className);
   ok("pesan siap dipakai muncul", /siap dipakai/i.test($("#keyCheck").textContent));
   ok("ditandai memakai kunci dari server", /memakai kunci dari server/.test($("#keyCheck").textContent), $("#keyCheck").textContent);
-  ok("log mencatat kunci valid", /cek kunci: valid/.test($("#log").textContent));
+  ok("log mencatat kunci valid", /cek kunci: DITERIMA Roblox/.test($("#log").textContent) && /valid, siap upload/.test($("#log").textContent), $("#log").textContent.slice(-160));
+
+  ok("putusan berubah jadi diterima", /KUNCI DITERIMA ROBLOX/.test($("#keyCheck").textContent), $("#keyCheck").textContent.slice(0, 80));
+  ok("chip uji berubah jadi hijau", /chip ok/.test($("#keyCheck").innerHTML), $("#keyCheck").innerHTML.slice(0, 200));
+
+  // bentuk kunci dihitung di browser (tidak dikirim ke server)
+  type($("#apiKey"), "kunci-lengkap-" + String.fromCharCode(0x200b) + "panjang-1234567890");
+  await wait(30);
+  ok("bentuk kunci dihitung langsung di browser", /karakter/.test($("#keyShape").textContent) && /karakter tak terlihat/.test($("#keyShape").textContent), $("#keyShape").textContent);
+  ok("contoh kunci disamarkan, bukan ditampilkan penuh", /\u2026/.test($("#keyShape").textContent) && !$("#keyShape").textContent.includes("kunci-lengkap-\u200bpanjang-1234567890"), $("#keyShape").textContent);
+
+  type($("#apiKey"), "kunci-lengkap-panjang-sekali-1234567890");
+  await wait(30);
+  ok("kunci wajar ditandai wajar", /bentuknya wajar/.test($("#keyShape").textContent), $("#keyShape").textContent);
+
+  ok("kolom kunci tidak menerima autofill password lama", $("#apiKey").getAttribute("autocomplete") === "new-password");
+  click($("#revealKey"));
+  ok("tombol Lihat membuka isi kolom kunci", $("#apiKey").type === "text" && /Sembunyikan/.test($("#revealKey").textContent), $("#apiKey").type);
+  click($("#revealKey"));
+  ok("tombol Lihat bisa ditutup lagi", $("#apiKey").type === "password");
+
+  click($("#pasteKey"));
+  await wait(30);
+  ok("tombol Tempel berfungsi walau clipboard diblokir jsdom", /clipboard/i.test($("#log").textContent), $("#log").textContent.slice(-120));
 
   // kunci kosong & tanpa kunci server → tidak boleh request
   const callsBefore = calls.filter((c) => c.path.endsWith("/api/check-key")).length;

@@ -42,7 +42,8 @@ const seen = {
   tokenExchange: null,  // body params
   failures: {},         // penghitung untuk skenario gagal
   cdnRequests: [],      // URL persis yang diminta ke CDN
-  introspect: []        // kunci yang dikirim ke endpoint introspect
+  introspect: [],       // kunci yang dikirim ke endpoint introspect
+  probe: []             // uji fungsi kunci (asset-read / user-read)
 };
 
 /** Byte "aset" palsu tapi deterministik: mirip header biner rbxm. */
@@ -225,6 +226,24 @@ const mockServer = http.createServer(async (req, res) => {
       });
     }
     return send(401, { code: 16, message: "API Key not found" });
+  }
+
+  /* --- uji fungsi kunci: baca aset (jalur auth yang sama dengan upload) --- */
+  m = url.pathname.match(/^\/assets\/v1\/assets\/(\d+)$/);
+  if (m && req.method === "GET") {
+    const key = req.headers["x-api-key"] || "";
+    seen.probe.push({ kind: "asset-read", assetId: m[1], key });
+    if (!key || key.length < 30) return send(401, { errors: [{ code: 0, message: "Invalid API Key" }] });
+    if (key.startsWith("kunci-tidak-dikenal")) return send(401, { errors: [{ code: 0, message: "Invalid API Key" }] });
+    return send(200, { assetId: m[1], assetType: "Animation", name: "uji", creationContext: { creator: { userId: "1234567" } } });
+  }
+  m = url.pathname.match(/^\/cloud\/v2\/users\/(\d+)$/);
+  if (m && req.method === "GET") {
+    const key = req.headers["x-api-key"] || "";
+    seen.probe.push({ kind: "user-read", userId: m[1], key });
+    if (!key || key.length < 30) return send(401, { errors: [{ code: 0, message: "Invalid API Key" }] });
+    if (key.startsWith("kunci-tidak-dikenal")) return send(401, { errors: [{ code: 0, message: "Invalid API Key" }] });
+    return send(200, { path: "users/" + m[1], id: m[1], name: "user" + m[1] });
   }
 
   /* --- users (publik) --- */
@@ -413,7 +432,7 @@ heading("2c. Diagnosa kunci API (/api/check-key)");
     method: "POST", body: JSON.stringify({ apiKey: K, userId: "1234567" })
   });
   ok("kunci valid + target cocok → ok", good.body.ok === true, JSON.stringify(good.body.findings));
-  ok("temuan pertama menyatakan siap dipakai", /siap dipakai/i.test(good.body.findings[0].message));
+  ok("temuan pertama menyatakan putusan", /DITERIMA Roblox/i.test(good.body.findings[0].message), good.body.findings[0].message);
   ok("nama akun pemilik kunci ikut ditampilkan", good.body.profile && good.body.profile.name === "TesterISM", JSON.stringify(good.body.profile));
   ok("scope dilaporkan apa adanya", JSON.stringify(good.body.scopes) === JSON.stringify([{ name: "asset", operations: ["read", "write"], userIds: ["*"], groupIds: ["33445566"] }]), JSON.stringify(good.body.scopes));
 
@@ -469,6 +488,83 @@ heading("2c. Diagnosa kunci API (/api/check-key)");
 
   ok("kunci tidak pernah bocor ke log server", !serverLog.includes(K), "ketemu di log");
   ok("kunci tidak dikembalikan di respons", !JSON.stringify(good.body).includes(K));
+}
+
+heading("2e. Uji fungsi kunci + lapisan bentuk kunci");
+{
+  // kunci sehat: harus lolos uji nyata, bukan cuma metadata
+  seen.probe.length = 0;
+  const good = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: "kunci-lengkap-panjang-sekali-1234567890", userId: "1234567" })
+  });
+  ok("kunci sehat → verdict 'ok'", good.body.verdict === "ok", JSON.stringify(good.body.verdict || good.body.findings));
+  ok("kunci sehat → ok:true", good.body.ok === true, JSON.stringify(good.body.findings));
+  ok("uji nyata benar-benar memakai kunci ke Assets API",
+    seen.probe.some((p) => p.kind === "asset-read" && p.key.startsWith("kunci-lengkap")),
+    JSON.stringify(seen.probe.map((p) => p.kind)));
+  ok("uji kedua: baca profil user (kalau User ID diisi)",
+    seen.probe.some((p) => p.kind === "user-read" && p.userId === "1234567"), JSON.stringify(seen.probe.map((p) => p.kind)));
+  ok("hasil uji dilaporkan ke UI (label + status)",
+    Array.isArray(good.body.probes) && good.body.probes.length === 2 && good.body.probes.every((p) => p.ok && p.status === 200),
+    JSON.stringify(good.body.probes));
+  ok("bentuk kunci dilaporkan: panjang + alphabet normal",
+    good.body.keyShape && good.body.keyShape.length === "kunci-lengkap-panjang-sekali-1234567890".length &&
+      good.body.keyShape.alphabetOk === true && good.body.keyShape.hiddenChars === 0,
+    JSON.stringify(good.body.keyShape));
+
+  // kunci yang tidak dikenali Roblox: uji nyata menolak → verdict reject
+  const rejected = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: "kunci-tidak-dikenal-sama-sekali-1234567890", userId: "1234567" })
+  });
+  ok("kunci tak dikenal → verdict 'reject'", rejected.body.verdict === "reject", JSON.stringify(rejected.body.verdict));
+  ok("putusan ditulis tegas di temuan pertama", /DITOLAK Roblox/i.test(rejected.body.findings[0].message), JSON.stringify(rejected.body.findings[0]));
+  ok("uji nyata yang menolak ikut dilaporkan",
+    rejected.body.probes.some((p) => p.status === 401 && /Invalid API Key/i.test(p.message)), JSON.stringify(rejected.body.probes));
+  ok("disarankan pakai tombol Copy dashboard, bukan blok manual",
+    /tombol Copy/i.test(rejected.body.findings.map((f) => f.message).join(" ")),
+    JSON.stringify(rejected.body.findings.map((f) => f.message)));
+
+  // kunci yang datang dengan karakter tak terlihat (kasus nyata di HP)
+  seen.probe.length = 0;
+  const zwsp = "kunci-lengkap-\u200Bpanjang-sekali-1234567890";
+  const hidden = await callJson("/api/check-key", { method: "POST", body: JSON.stringify({ apiKey: zwsp, userId: "1234567" }) });
+  ok("karakter tak terlihat dihitung", hidden.body.keyShape.hiddenChars === 1, JSON.stringify(hidden.body.keyShape));
+  ok("karakter tak terlihat diberitahukan ke user",
+    /karakter tak terlihat/i.test(hidden.body.findings.map((f) => f.message).join(" ")),
+    JSON.stringify(hidden.body.findings.map((f) => f.message)));
+  ok("kunci dengan karakter tak terlihat tetap dipakai setelah dibersihkan", hidden.body.verdict === "ok", JSON.stringify(hidden.body.verdict));
+  ok("yang dikirim ke Roblox benar-benar sudah bersih",
+    seen.probe.length > 0 && seen.probe.every((p) => p.key.indexOf("\u200B") < 0),
+    JSON.stringify(seen.probe.map((p) => p.key.length)));
+
+  // karakter aneh (mis. hasil copy dari tempat lain)
+  const weird = await callJson("/api/check-key", { method: "POST", body: JSON.stringify({ apiKey: "kunci-lengkap-€panjang-sekali-1234567890", userId: "1234567" }) });
+  ok("karakter non-ASCII → error yang jelas",
+    weird.body.keyShape && weird.body.keyShape.odd.length > 0 &&
+      weird.body.findings.some((f) => f.level === "error" && /tidak pernah ada di kunci Roblox/i.test(f.message)),
+    JSON.stringify(weird.body.keyShape || weird.body));
+  ok("kunci non-ASCII → verdict reject, tanpa memanggil Roblox",
+    weird.body.verdict === "reject" && Array.isArray(weird.body.probes) && weird.body.probes.length === 0,
+    JSON.stringify({ v: weird.body.verdict, p: weird.body.probes }));
+
+  // kunci panjang: dilaporkan apa adanya, tidak ditebak-tebak
+  const longKey = "kunci-lengkap-" + "A".repeat(400) + "-1234567890";
+  const long = await callJson("/api/check-key", { method: "POST", body: JSON.stringify({ apiKey: longKey, userId: "1234567" }) });
+  ok("panjang kunci dilaporkan apa adanya", long.body.keyShape.length === longKey.length, JSON.stringify(long.body.keyShape));
+  ok("kunci panjang tetap lolos kalau Roblox menerimanya", long.body.verdict === "ok", JSON.stringify(long.body.verdict));
+
+  // jalur upload juga harus menolak dengan pesan jelas, bukan error 500
+  const badUpload = await callJson("/api/jobs", {
+    method: "POST",
+    body: JSON.stringify({ input: "180435571", apiKey: "kunci-lengkap-€panjang-sekali-1234567890", options: { userId: "1234567" } })
+  });
+  ok("upload dengan kunci non-ASCII → ditolak dengan pesan, bukan 500",
+    badUpload.status === 202 ? true : (badUpload.status < 500 && /non-ASCII/i.test(JSON.stringify(badUpload.body))),
+    badUpload.status + " " + JSON.stringify(badUpload.body).slice(0, 160));
+
+  ok("respons tidak memuat kunci mentah",
+    JSON.stringify(long.body).indexOf("A".repeat(50)) < 0 && JSON.stringify(long.body).indexOf("kunci-lengkap") < 0,
+    "panjang respons " + JSON.stringify(long.body).length);
 }
 
 heading("2d. Penerjemah pesan error (explainError)");
@@ -530,7 +626,9 @@ heading("3. Jalur utama: ID → ID baru (API key)");
   }
 
   /* --- bukti byte-identik: hash dari CDN vs hash yang diterima endpoint upload --- */
-  const up = seen.uploads[0];
+  // Jangan bergantung urutan: item di-upload paralel, jadi upload pertama yang sampai
+  // belum tentu milik ID yang sama. Cari upload yang displayName-nya memuat ID ini.
+  const up = seen.uploads.find((u) => /1234567890$/.test(String(u.request && u.request.displayName || ""))) || seen.uploads[0];
   const src = fakeRbxm("1234567890");
   ok("byte yang di-upload IDENTIK dengan byte dari CDN", up.fileSha === sha(src), up.fileSha + " vs " + sha(src));
   ok("hash itu sama dengan yang dilaporkan server ke UI", snap.items.find((i) => i.id === "1234567890").sha256 === sha(src));

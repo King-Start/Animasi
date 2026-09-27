@@ -674,8 +674,15 @@ const server = http.createServer(async (req, res) => {
         userId: String(body.userId || "").trim() || null,
         groupId: String(body.groupId || "").trim() || null
       });
-      // jangan pernah menuliskan kunci ke log, bahkan yang teredaksi sekalipun
-      log(`check-key: target=${body.groupId ? "group " + body.groupId : body.userId ? "user " + body.userId : "belum diisi"} → ${result.ok ? "OK" : "ADA MASALAH"}`);
+      // jangan pernah menuliskan kunci ke log, bahkan yang teredaksi sekalipun.
+      // Yang boleh masuk log cuma bentuknya (panjang & karakter aneh) — bukan isinya.
+      const ks = result.keyShape || {};
+      const probeRingkas = (result.probes || []).map((p) => `${p.id}=${p.status}`).join(" ");
+      log(
+        `check-key: target=${body.groupId ? "group " + body.groupId : body.userId ? "user " + body.userId : "belum diisi"} ` +
+          `→ ${result.verdict || (result.ok ? "ok" : "gagal")} ` +
+          `(panjang kunci ${ks.length || 0}, tak-terlihat ${ks.hiddenChars || 0}, aneh ${(ks.odd || []).length}${probeRingkas ? ", uji " + probeRingkas : ""})`
+      );
       return json(res, 200, { ...result, usingServerKey: !body.apiKey && Boolean(cfg.serverApiKey) });
     }
 
