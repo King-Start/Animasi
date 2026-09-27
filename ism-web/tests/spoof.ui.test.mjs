@@ -57,6 +57,8 @@ let uploadCheckBody = null;
 const uploadCheckCalls = [];
 let reportText = "# Laporan job ISpooferMotion Web\njobId : job-uji\n";
 let handoffBody = { ok: true, jobs: [], pairs: [], lines: "", count: 0 };
+let whoamiBody = { ok: true, id: "9904328104", name: "TesterISM", displayName: "Tester ISM" };
+const whoamiCalls = [];
 let openedUrls = [];
 let checkKeyBody = {
   ok: false, usingServerKey: false, verdict: "reject",
@@ -123,6 +125,10 @@ const dom = new JSDOM(html, {
       }
       if (path.includes("/api/jobs/job-uji/events")) return reply(200, {});
       if (path.endsWith("/api/handoff")) return reply(200, handoffBody);
+      if (path.endsWith("/api/whoami")) {
+        whoamiCalls.push({ method: (opts && opts.method) || "GET", body: JSON.parse((opts && opts.body) || "{}") });
+        return reply(200, whoamiBody);
+      }
       if (path.endsWith("/api/check-upload")) {
         uploadCheckCalls.push({ method: (opts && opts.method) || "GET", body: JSON.parse((opts && opts.body) || "{}") });
         return reply(200, uploadCheckBody);
@@ -545,7 +551,86 @@ await wait(80);
 ok("kembali kosong → tabel memberi tahu apa adanya",
   /Belum ada hasil dari sesi browser/.test($("#extRows").textContent), $("#extRows").textContent.slice(0, 160));
 
+heading("12. Mode cookie sesi (opsional, hanya di server sendiri)");
+ok("kotak cookie ada di halaman", Boolean($("#cookieBox")));
+ok("kotak cookie TERSEMBUNYI saat server belum menyalakannya",
+  $("#cookieBox").className.includes("hide"), $("#cookieBox").className);
+ok("input cookie berjenis password (tidak tampil di layar)",
+  $("#cookieInput") && $("#cookieInput").getAttribute("type") === "password", $("#cookieInput") && $("#cookieInput").getAttribute("type"));
+ok("ada tombol Hapus untuk membuang cookie dari memori", Boolean($("#cookieClearBtn")));
+ok("peringatan menegaskan 'server milikmu sendiri'", /server milikmu sendiri/i.test($("#cookieBox").textContent),
+  $("#cookieBox").textContent.slice(0, 120));
+ok("peringatan melarang menempel di preview asisten/sandbox", /[Jj]angan tempel di preview/i.test($("#cookieBox").textContent),
+  $("#cookieBox").textContent.slice(0, 160));
+ok("dijelaskan cookie menganggur kalau tidak dibutuhkan (userscript lebih aman)",
+  /userscript lebih aman/i.test($("#cookieBox").textContent), $("#cookieBox").textContent.slice(-120));
+
+// Sekarang server mengizinkan: kotak muncul.
+healthBody = { ...healthBody, cookieAuth: true };
+const dom4 = new JSDOM(html, {
+  runScripts: "dangerously", pretendToBeVisual: true, virtualConsole: vc,
+  url: "https://situs-uji.example/spoof.html",
+  beforeParse(win4) {
+    win4.EventSource = FakeEventSource;
+    win4.navigator.clipboard = { writeText: () => Promise.resolve() };
+    win4.fetch = (url, opts) => {
+      const p = String(url);
+      const reply = (status, body) => Promise.resolve({
+        ok: status >= 200 && status < 300, status,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(typeof body === "string" ? body : JSON.stringify(body)),
+        headers: { getSetCookie: () => [] }
+      });
+      calls.push({ path: p, method: (opts && opts.method) || "GET", body: opts && opts.body });
+      if (p.endsWith("/api/health")) return reply(200, healthBody);
+      if (p.endsWith("/api/me")) return reply(200, { loggedIn: false });
+      if (p.endsWith("/api/whoami")) {
+        whoamiCalls.push({ method: (opts && opts.method) || "GET", body: JSON.parse((opts && opts.body) || "{}") });
+        return reply(200, whoamiBody);
+      }
+      if (p.endsWith("/api/handoff")) return reply(200, { ok: true, jobs: [], pairs: [], lines: "", count: 0 });
+      if (p.endsWith("/api/jobs") && opts && opts.method === "POST") return reply(202, { jobId: "job-cookie", total: 1 });
+      if (p.includes("/api/jobs/job-cookie")) return reply(200, { status: "running", summary: { total: 1, done: 0, error: 0, pending: 1 }, items: [] });
+      return reply(404, { error: "tidak ada di mock: " + p });
+    };
+  }
+});
+const doc4 = dom4.window.document;
+const $4 = (q) => doc4.querySelector(q);
+await wait(180);
+ok("server menyalakan mode cookie → kotak tampil",
+  $4("#cookieBox").className.includes("cookiebox") && !$4("#cookieBox").className.includes("hide"), $4("#cookieBox").className);
+
+const COOKIE_UJI = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_uji1234567890abcdef";
+$4("#cookieInput").value = COOKIE_UJI;
+$4("#cookieUseBtn").dispatchEvent(new dom4.window.MouseEvent("click", { bubbles: true }));
+await wait(120);
+const wCall = whoamiCalls[whoamiCalls.length - 1];
+ok("cookie dikirim ke /api/whoami saat tombol Pakai ditekan", Boolean(wCall) && wCall.body.cookie === COOKIE_UJI, JSON.stringify(wCall && Object.keys(wCall.body)));
+ok("User ID terisi otomatis dari sesi cookie", $4("#userId").value === "9904328104", $4("#userId").value);
+ok("log menyebut nama akun yang login", /Tester ISM|TesterISM/.test($4("#log").textContent), $4("#log").textContent.slice(-160));
+ok("log menegaskan cookie hanya di memori halaman", /memori halaman/i.test($4("#log").textContent), $4("#log").textContent.slice(-200));
+
+// Cookie ikut ke payload job (di dalam memori), tapi TIDAK ke storage browser
+$4("#input").value = "180435571";
+$4("#input").dispatchEvent(new dom4.window.Event("input", { bubbles: true }));
+$4("#apiKey").value = "kunci-uji-panjang";
+$4("#runBtn").disabled = false;
+$4("#runBtn").dispatchEvent(new dom4.window.MouseEvent("click", { bubbles: true }));
+await wait(150);
+const jobCall4 = calls.filter((c) => c.path.endsWith("/api/jobs") && c.method === "POST").pop();
+ok("cookie ikut dikirim bersama job", Boolean(jobCall4) && JSON.parse(jobCall4.body).cookie === COOKIE_UJI,
+  JSON.stringify(jobCall4 && Object.keys(JSON.parse(jobCall4.body))));
+let storageTxt = "";
+try { storageTxt = JSON.stringify(dom4.window.localStorage) + JSON.stringify(dom4.window.sessionStorage); } catch (_) {}
+ok("cookie TIDAK ditulis ke localStorage/sessionStorage", !/DO-NOT-SHARE|uji1234567890/.test(storageTxt), storageTxt.slice(0, 120));
+
+$4("#cookieClearBtn").dispatchEvent(new dom4.window.MouseEvent("click", { bubbles: true }));
+await wait(60);
+ok("tombol Hapus mengosongkan kolom & memori", $4("#cookieInput").value === "" && /cookie dihapus/i.test($4("#log").textContent),
+  $4("#log").textContent.slice(-120));
+
 console.log("\n" + "=".repeat(54));
 console.log(`${pass} lolos · ${fail} gagal`);
-dom.window.close(); dom2.window.close(); dom3.window.close();
+dom.window.close(); dom2.window.close(); dom3.window.close(); dom4.window.close();
 process.exit(fail ? 1 : 0);

@@ -60,6 +60,7 @@ Server yang sama juga menyajikan seluruh situs di `http://localhost:8787/`
 | `CONCURRENCY` | `3` | job diproses paralel (1–6) |
 | `MAX_ITEMS` | `120` | batas jumlah ID per job (1–500) |
 | `JOB_RATE_LIMIT` | `10` | job per menit per IP |
+| `ALLOW_COOKIE_AUTH` | `0` (mati) | menyalakan mode cookie sesi (opsional). Cookie hanya untuk mengunduh; wajib pakai `ACCESS_PASSWORD` kalau di hosting publik |
 | `REPORT_DIR` | `ism-web/reports` | folder laporan job (maks. 25 berkas terakhir) |
 | `POLL_TIMEOUT_MS` | `90000` | batas tunggu jawaban akhir upload; lewat batas → item `belum pasti` (tidak di-upload ulang) |
 | `ALLOWED_ORIGINS` | — | daftar origin CORS (mis. kalau UI di-host di GitHub Pages) |
@@ -122,7 +123,7 @@ curl -s localhost:8787/api/jobs -H 'content-type: application/json' -d '{
 node ism-web/tests/api.test.mjs
 ```
 
-242 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
+268 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
 
 - alur lengkap ID → byte → upload → ID baru, termasuk upload ke grup dan operasi async
 - **bukti byte identik**: SHA-256 byte yang diterima endpoint upload dibandingkan dengan byte dari CDN
@@ -147,6 +148,12 @@ node ism-web/tests/api.test.mjs
   403 halaman HTML = IP diblokir · 429 = batas per-IP
 - **laporan job** (`GET /api/jobs/{id}/report`, juga tersimpan di `REPORT_DIR`) berisi status per
   item, HTTP status, pesan asli Roblox, sha256, operationId, dan hint — dijamin **tanpa kredensial**
+- **mode cookie sesi (opsional)** — `ALLOW_COOKIE_AUTH=1`. Cookie hanya dipakai untuk MENGUNDUH
+  isi aset yang dibatasi lewat `assetdelivery/v2/assets/batch` (jalur yang sama dengan aplikasi V2),
+  dan untuk membaca identitas (`users/v1/users/authenticated`) supaya User ID terisi otomatis.
+  Diuji: cookie **tidak pernah** ikut ke endpoint upload, tidak pernah masuk log/laporan/snapshot,
+  dibuang dari memori begitu job selesai, dan mode ini **menolak jalan** di hosting publik tanpa
+  `ACCESS_PASSWORD`
 - **serah-terima sesi browser** (`GET /api/handoff`): job yang datang dari userscript
   (`via=userscript` + `oldId`) dirangkum jadi keluaran `lama = baru,` siap tempel; job dari daftar
   ID biasa tidak tercampur, dan upload manual tanpa ID asal tidak menambah pasangan palsu

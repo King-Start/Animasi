@@ -148,6 +148,37 @@ Hasil **Uji izin upload**:
 
 Catatan penting: sejak pembaruan ini, **setiap kegagalan upload menampilkan HTTP status aslinya**, dan pesan Roblox ditampilkan apa adanya. Jadi kalau kuncinya yang bermasalah, di tabel akan tertulis `HTTP 401` + `Invalid API Key` — bukan disamarkan jadi "gagal".
 
+## Mode cookie sesi (opsional) — kalau kamu mau server yang mengunduh, bukan browser
+
+Aplikasi ISpooferMotion V2 mengambil aset terkunci dengan membaca cookie dari browser/keyring
+(`cookies.rs`) lalu menembak `assetdelivery/v2/assets/batch`. Situs ini bisa melakukan hal yang
+sama kalau kamu menyalakannya:
+
+```bash
+# di komputermu sendiri:
+ALLOW_COOKIE_AUTH=1 ACCESS_PASSWORD=rahasia-panjang node ism-web/server.mjs
+```
+
+1. Buka halaman → akan muncul kotak **Mode cookie sesi** (kalau server belum dinyalakan, kotaknya
+   disembunyikan — jadi jelas versi mana yang jalan).
+2. Tempel cookie-mu (`Ctrl+Shift+I` → Application/Storage → Cookies → `roblox.com` → `.ROBLOSECURITY`).
+3. Tekan **Pakai & isi User ID** → situs menanya ke Roblox "ini sesi siapa?", lalu mengisi User ID
+   otomatis dan menampilkan nama akunnya.
+4. Isi API key seperti biasa → jalankan. Aset yang tadinya `403 User is not authorized` sekarang
+   bisa diambil lewat sesi, dan ID barunya tetap dibuat oleh API key-mu.
+
+Yang perlu kamu tahu sebelum menyalakannya:
+
+| | |
+| --- | --- |
+| **Kekuatan cookie** | Siapa pun yang memegangnya bisa masuk sebagai kamu (Robux, item, grup). Perlakukan seperti password. |
+| **Jangan di preview asisten/sandbox** | Preview itu jalan di mesin asisten, bukan mesinmu. Tempel cookie hanya di **servermu sendiri** (localhost, atau Railway-mu yang sudah pakai `ACCESS_PASSWORD`). |
+| **Di hosting publik** | Server menolak memakai mode ini kalau `ACCESS_PASSWORD` belum diset (otomatis dimatikan + peringatan). Jadi URL yang bocor tidak langsung berarti akunmu bocor. |
+| **Yang dilakukan server** | Dikirim hanya ke `*.roblox.com`; tidak ditulis ke disk; tidak masuk log/laporan (ada "sapu" teks yang mengganti nilainya jadi `[kredensial disembunyikan]`); dibuang dari memori begitu job selesai. Tidak ada opsi "ingat cookie". |
+| **Yang TIDAK bisa** | Upload tetap butuh Open Cloud API key — sama seperti V2 (`apply_upload_auth` = `x-api-key`). Cookie hanya membuka jalur unduh. |
+| **Risiko aturan Roblox** | Memakai cookie di aplikasi pihak ketiga melanggar aturan Roblox dan bisa berujung tindakan ke akun. Untuk sebagian orang, jalur **userscript** (browser yang memakai sesinya sendiri) lebih aman dan hasilnya sama. |
+| **Umur cookie** | Cookie mati begitu kamu logout / ganti password / sesi kedaluwarsa. Kalau muncul "Cookie sudah kedaluwarsa", ambil ulang dari browser. |
+
 ## Yang perlu diketahui
 - Server ini **tidak pernah** memakai cookie akun Roblox. Auth hanya API key / OAuth.
 - API key tidak ditulis ke disk dan tidak masuk log.

@@ -25,7 +25,8 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 
 import {
-  createRobloxClient, buildAuthorizeUrl, exchangeCodeForToken, fetchUserInfo, RobloxError
+  createRobloxClient, buildAuthorizeUrl, exchangeCodeForToken, fetchUserInfo, RobloxError,
+  scrub, registerSecret, forgetSecret, normalizeCookie
 } from "./lib/roblox.mjs";
 import { parseAssetList, formatForPlugin, formatPlain, formatPairs } from "./lib/parse.mjs";
 
@@ -34,7 +35,7 @@ const VERSION = "1.0.0";
 
 // Daftar fitur yang ada di build ini. UI menampilkannya supaya jelas server mana yang
 // sedang dipakai — kalau fiturnya tidak muncul, berarti yang jalan adalah versi lama.
-const FEATURES = ["pending-confirm", "recheck", "preflight-upload", "job-report"];
+const FEATURES = ["pending-confirm", "recheck", "preflight-upload", "job-report", "cookie-mode"];
 
 /* ------------------------------------------------------------------ config */
 const cfg = {
@@ -51,6 +52,10 @@ const cfg = {
   // Berapa lama menunggu jawaban akhir Roblox setelah upload. Kalau habis, item
   // TIDAK dianggap gagal — jadi "belum pasti" dan ID-nya dicari di inventaris.
   pollTimeoutMs: Math.max(1000, Number(process.env.POLL_TIMEOUT_MS || 90000)),
+  // Mode cookie sesi (opsional, mati secara default). Hanya operator yang menyalakannya
+  // (ALLOW_COOKIE_AUTH=1) yang bisa memakai jalur ini. Cookie tidak pernah ditulis ke disk.
+  cookieAuth: process.env.ALLOW_COOKIE_AUTH === "1",
+  cookieAuthRefused: null,
   // Folder laporan job. Bisa dipindah supaya pengujian tidak mengotori folder kerja.
   reportDir: process.env.REPORT_DIR || path.resolve(__dirname, "reports"),
   oauth: {
@@ -71,11 +76,13 @@ const cfg = {
 
 const oauthEnabled = Boolean(cfg.oauth.clientId && cfg.oauth.clientSecret);
 const roblox = createRobloxClient(Object.fromEntries(Object.entries(cfg.roblox).filter(([, v]) => v)));
+guardCookieMode();
 
 /* ------------------------------------------------------------ util kecil */
 const now = () => Date.now();
 
-function log(...args) { console.log(new Date().toISOString(), ...args); }
+function log(...args) {
+  args = args.map((a) => (typeof a === "string" ? scrub(a) : a)); console.log(new Date().toISOString(), ...args); }
 
 /** Jangan pernah menulis kredensial ke log. */
 function redact(value) {
@@ -233,6 +240,7 @@ async function serverEgressIp() {
  * Tidak butuh kredensial, dan tidak mengubah apa pun di akun user.
  */
 async function tryRecover(job, item) {
+  const cookie = (job.auth && job.auth.cookie) || null;
   const target = job.options.target || {};
   const displayName = item.displayName || (item.source === "file" ? item.fileName : (job.options.namePrefix || "ISM Spoof") + " " + item.id);
   try {
@@ -375,7 +383,7 @@ function jobReportText(job) {
       }
       lines.push("");
     }
-  return lines.join("\n");
+  return scrub(lines.join("\n"));
 }
 
 async function writeJobReport(job) {
@@ -473,7 +481,11 @@ async function processItem(job, item) {
         item.status = "fetching";
         emit(job, { type: "item", id: item.id, status: item.status, attempt });
 
-        const dl = await roblox.downloadAsset(item.id, { placeId: opts.placeId });
+        const dl = await roblox.downloadAsset(item.id, {
+          placeId: opts.placeId,
+          gameId: opts.gameId,
+          cookie: (job.auth && job.auth.cookie) || null
+        });
         item.bytesLength = dl.bytesLength;
         item.sha256 = dl.sha256;
         item.assetType = dl.assetType || "Animation";
@@ -554,8 +566,8 @@ async function processItem(job, item) {
       }
       item.status = "error";
       item.stage = item.stage || "unknown";
-      item.error = re.message;
-      item.hint = roblox.explainError(re.message) || null;
+      item.error = scrub(re.message);
+      item.hint = scrub(roblox.explainError(re.message)) || null;
       // kode HTTP dari Roblox (401/403/429/…) supaya bisa dibedakan: butuh login,
       // diblokir IP, atau kena batas permintaan.
       const hs = Number(re.status) || Number(re.code) || 0;
@@ -609,6 +621,13 @@ async function runJob(job) {
   job.authKind = (job.auth && job.auth.kind) || job.authKind || null;
   writeJobReport(job).catch(() => {});
 
+  // Cookie SELALU dibuang setelah job (tidak ada opsi "ingat cookie"), dan nilainya
+  // dihapus dari daftar sapu teks supaya tidak tertinggal di memori proses.
+  if (job.auth && job.auth.cookie) {
+    forgetSecret(job.auth.cookie);
+    job.auth.cookie = null;
+    job.auth.kind = String(job.auth.kind || "").replace(/^cookie\+?/, "") || "apikey";
+  }
   // kredensial per-job dibuang begitu selesai, kecuali diminta disimpan
   if (!job.options.rememberKey) job.auth = null;
   job.items.forEach((it) => { delete it.bytes; });
@@ -722,8 +741,11 @@ const server = http.createServer(async (req, res) => {
         features: FEATURES,
         egressIp: await (async () => { const ip = await serverEgressIp(); if (ip) egressIpLast = ip; return ip; })(),
         userAgents: (roblox.config.userAgents || []).map((u) => String(u).split("/")[0]).slice(0, 5),
-        cookieAuth: false,
-        note: "Server ini tidak menerima cookie sesi Roblox. Auth hanya Open Cloud API key atau OAuth 2.0."
+        cookieAuth: Boolean(cfg.cookieAuth),
+        cookieAuthRefused: cfg.cookieAuthRefused,
+        note: cfg.cookieAuth
+          ? "Mode cookie sesi AKTIF (opsional): cookie hanya dipakai untuk MENGUNDUH isi aset yang dibatasi, tidak ditulis ke disk, tidak diteruskan ke mana pun. Upload tetap memakai API key/OAuth. Nyalakan hanya di server milikmu sendiri."
+          : "Server ini tidak menerima cookie sesi Roblox. Auth hanya Open Cloud API key atau OAuth 2.0."
       });
     }
 
@@ -802,9 +824,21 @@ const server = http.createServer(async (req, res) => {
         userId: String(body.options?.userId || "").trim() || undefined,
         groupId: String(body.options?.groupId || "").trim() || undefined
       };
+      // gameId: dipakai untuk header konteks game (Roblox-Game-Id) seperti V2
+      const gameId = String(body.options?.gameId || body.gameId || "").trim() || null;
+
+      const auth = resolveAuth(req, body.apiKey, body.cookie);
+
+      // Kalau target belum diisi tapi ada cookie, ambil User ID dari sesinya.
+      if (auth.cookie && !target.userId && !target.groupId) {
+        const me = await roblox.whoami(auth.cookie).catch(() => null);
+        if (me && me.ok && me.id) {
+          target.userId = me.id;
+          log(`job: User ID tujuan diisi otomatis dari cookie (${me.name || me.id})`);
+        }
+      }
       job_validateTarget(target);
 
-      const auth = resolveAuth(req, body.apiKey);
       const job = newJob({
         items: items.map((it) => ({
           id: it.id, name: it.name || null, creatorId: it.creatorId || null,
@@ -812,6 +846,7 @@ const server = http.createServer(async (req, res) => {
         })),
         options: {
           placeId: String(body.options?.placeId || "").trim() || null,
+          gameId,
           namePrefix: String(body.options?.namePrefix || "ISM Spoof").trim().slice(0, 40),
           description: body.options?.description || null,
           assetType: body.options?.assetType || "Animation",
@@ -853,7 +888,7 @@ const server = http.createServer(async (req, res) => {
         groupId: String(form.get("groupId") || "").trim() || undefined
       };
       job_validateTarget(target);
-      const auth = resolveAuth(req, form.get("apiKey"));
+      const auth = resolveAuth(req, form.get("apiKey"), form.get("cookie"));
       const viaUserscript = String(form.get("via") || "").trim() === "userscript";
 
       const id = randomBytes(6).toString("base64url");
@@ -1028,7 +1063,7 @@ const server = http.createServer(async (req, res) => {
       job_validateTarget(target); // melempar kalau ID tujuan kosong/dua-duanya
       let auth;
       try {
-        auth = resolveAuth(req, body.apiKey);
+        auth = resolveAuth(req, body.apiKey, body.cookie);
       } catch (err) {
         return json(res, 200, {
           ok: false, verdict: "no-credential", status: 0,
@@ -1058,6 +1093,35 @@ const server = http.createServer(async (req, res) => {
         return json(res, 404, { error: "Job tidak ditemukan atau sudah kedaluwarsa." });
       }
       return json(res, 200, { ok: true, text: jobReportText(job) });
+    }
+
+    /* ---------- siapa pemilik cookie sesi ini (untuk isi User ID otomatis) ---------- */
+    if (p === "/api/whoami" && req.method === "POST") {
+      if (!rateLimit(req, "whoami", 20, 60_000)) {
+        return json(res, 429, { error: "rate-limited", message: "Terlalu banyak percobaan. Tunggu sebentar." });
+      }
+      if (!cfg.cookieAuth) {
+        return json(res, 400, {
+          ok: false,
+          error: "cookie-mode-off",
+          message: "Mode cookie dimatikan di server ini." + (cfg.cookieAuthRefused ? " Alasan: " + cfg.cookieAuthRefused + "." : "") +
+            " Kalau ini servermu, jalankan dengan ALLOW_COOKIE_AUTH=1."
+        });
+      }
+      const body = await readJson(req);
+      const raw = String(body.cookie || "").trim();
+      if (!raw) return json(res, 400, { ok: false, error: "cookie-kosong", message: "Cookie belum diisi." });
+      const norm = normalizeCookie(raw);
+      if (!norm.ok) {
+        return json(res, 400, { ok: false, error: "cookie-bentuk", message: "Cookie sesi tidak dikenali (" + norm.reason + ")." });
+      }
+      registerSecret(norm.value);
+      const me = await roblox.whoami(norm.value);
+      log(me.ok ? `whoami: cookie valid → ${me.name || me.id} (id ${me.id})` : `whoami: cookie ditolak (HTTP ${me.status})`);
+      return json(res, 200, {
+        ok: Boolean(me.ok), id: me.id || null, name: me.name || null, displayName: me.displayName || null,
+        status: me.status || 0, message: scrub(me.message) || null
+      });
     }
 
     /* ---------- hasil yang datang dari sesi browser (userscript) ---------- */
@@ -1106,12 +1170,39 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-function resolveAuth(req, apiKeyFromClient) {
+function resolveAuth(req, apiKeyFromClient, cookieFromClient) {
   const session = verify(parseCookies(req).ism_session);
   const key = String(apiKeyFromClient || "").trim();
-  if (cfg.serverApiKey) return { kind: "apikey", apiKey: cfg.serverApiKey, source: "env" };
-  if (session?.accessToken) return { kind: "oauth", accessToken: session.accessToken, source: "oauth" };
-  if (key) return { kind: "apikey", apiKey: key, source: "request" };
+  const rawCookie = String(cookieFromClient || "").trim();
+
+  // Cookie sesi (opsional): HANYA untuk mengunduh isi aset yang dibatasi, seperti cara
+  // kerja ISpooferMotion V2. Tidak ditulis ke disk, tidak masuk log (didafarkan ke "sapu"
+  // teks), dan dibuang begitu job selesai. Upload tetap memakai API key/OAuth.
+  let cookie = null;
+  if (rawCookie) {
+    if (!cfg.cookieAuth) {
+      throw new RobloxError(
+        "Server ini tidak menerima cookie sesi (mode cookie dimatikan). " +
+          (cfg.cookieAuthRefused ? "Alasan: " + cfg.cookieAuthRefused + ". " : "") +
+          "Pakai Open Cloud API key, atau jalankan sendiri servernya dengan ALLOW_COOKIE_AUTH=1.",
+        { code: 400 }
+      );
+    }
+    const norm = normalizeCookie(rawCookie);
+    if (!norm.ok) {
+      throw new RobloxError(
+        "Cookie sesi tidak dikenali (" + norm.reason + "). Tempel nilainya saja — boleh dengan/tanpa '.ROBLOSECURITY='.",
+        { code: 400 }
+      );
+    }
+    cookie = norm.value;
+    registerSecret(cookie);
+  }
+
+  if (cfg.serverApiKey) return { kind: cookie ? "cookie+apikey" : "apikey", apiKey: cfg.serverApiKey, cookie, source: "env" };
+  if (session?.accessToken) return { kind: cookie ? "cookie+oauth" : "oauth", accessToken: session.accessToken, cookie, source: "oauth" };
+  if (key) return { kind: cookie ? "cookie+apikey" : "apikey", apiKey: key, cookie, source: "request" };
+  if (cookie) return { kind: "cookie", cookie, source: "request" }; // unduh saja; upload butuh kunci
   throw new RobloxError(
     "Butuh kredensial: pakai Open Cloud API key, atau login OAuth kalau server ini mendukungnya. " +
     "(Jangan pernah pakai cookie akun di sini.)",
@@ -1137,6 +1228,26 @@ function job_validateTarget(target) {
  * Default-nya: tolak start. Set ALLOW_PUBLIC_SERVER_KEY=1 kalau kamu benar-benar
  * paham risikonya (mis. URL-nya memang privat dan tidak diindeks).
  */
+function guardCookieMode() {
+  const hosted = Boolean(
+    process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.FLY_APP_NAME || process.env.HEROKU_APP_NAME || process.env.DYNO
+  );
+  if (!cfg.cookieAuth) return;
+  if (hosted && !cfg.accessPassword) {
+    cfg.cookieAuth = false;
+    cfg.cookieAuthRefused = "butuh ACCESS_PASSWORD kalau dijalankan di hosting publik";
+    console.warn(
+      "PERINGATAN: ALLOW_COOKIE_AUTH=1 tapi ACCESS_PASSWORD belum diset di hosting publik — mode cookie DIMATIKAN demi keamanan.\n" +
+      "            Set ACCESS_PASSWORD dulu, baru mode cookie boleh dipakai."
+    );
+    return;
+  }
+  console.warn(
+    "PERINGATAN: mode cookie sesi AKTIF. Cookie hanya dipakai untuk mengunduh isi aset, tidak ditulis ke disk,\n" +
+    "            dan tidak pernah diteruskan ke pihak ketiga. Pakai hanya di server milikmu sendiri."
+  );
+}
+
 function checkPublicSafety() {
   const hosted = Boolean(
     process.env.RAILWAY_ENVIRONMENT ||
@@ -1188,7 +1299,9 @@ server.listen(cfg.port, cfg.host, () => {
   log(`  auth tersedia   : API key (${cfg.serverApiKey ? "dari env" : "dari UI"})${oauthEnabled ? " · OAuth 2.0" : ""}`);
   if (cfg.accessPassword) log("  gate            : aktif (ACCESS_PASSWORD)");
   if (!process.env.SESSION_SECRET) log("  catatan         : SESSION_SECRET acak — sesi hilang saat server restart");
-  log("  cookie akun Roblox TIDAK dipakai oleh server ini.");
+  log(cfg.cookieAuth
+    ? "  cookie sesi : AKTIF (opsional) — hanya untuk MENGUNDUH aset yang dibatasi; tidak ditulis ke disk, tidak masuk log/laporan, dibuang setelah job."
+    : "  cookie akun Roblox TIDAK dipakai oleh server ini (mode cookie mati; nyalakan dengan ALLOW_COOKIE_AUTH=1 kalau memang servermu sendiri).");
   log(cfg.serverApiKey
     ? "  kunci API  : dipasang di server (user tidak perlu mengisi) — jaga URL ini tetap privat"
     : "  kunci API  : tidak dipasang di server — tiap user memakai kuncinya sendiri di UI");

@@ -76,6 +76,57 @@ export function classifyCredential(raw) {
   return { kind: "unknown", length, label: "bentuk kredensial tidak dikenal" };
 }
 
+/* ------------------------------------------------------------------ kerahasiaan
+ * Semua kredensial yang masuk ke proses ini didaftarkan di sini, lalu "disapu" dari
+ * setiap teks yang keluar (log, pesan error, laporan). Jadi walaupun Roblox atau
+ * Node memantulkan kembali nilainya, yang keluar tetap versi bersihnya.
+ */
+const SECRETS = new Set();
+
+export function registerSecret(value) {
+  const v = String(value == null ? "" : value);
+  if (v.length >= 24) SECRETS.add(v);
+  return v.length;
+}
+
+export function forgetSecret(value) {
+  SECRETS.delete(String(value == null ? "" : value));
+}
+
+export function scrub(text) {
+  let out = String(text == null ? "" : text);
+  for (const sec of SECRETS) {
+    if (sec && out.includes(sec)) out = out.split(sec).join("[kredensial disembunyikan]");
+  }
+  // jaring pengaman: pola cookie sesi Roblox walau belum terdaftar
+  out = out.replace(/_?\|?WARNING:-DO-NOT-SHARE[\s\S]{0,600}?\|_[\w-]{6,}/g, "[cookie disembunyikan]");
+  return out;
+}
+
+/** Bersihkan nilai cookie yang ditempel user: boleh dengan/tanpa ".ROBLOSECURITY=". */
+export function normalizeCookie(raw) {
+  let v = String(raw == null ? "" : raw).trim();
+  v = v.replace(/^(?:set-)?cookie\s*:\s*/i, "");
+  v = v.replace(/^\.?ROBLOSECURITY\s*=\s*/i, "");
+  v = v.replace(/^["']|["']$/g, "").trim();
+  if (!v) return { ok: false, reason: "kosong" };
+  if (/\s/.test(v)) return { ok: false, reason: "mengandung spasi atau baris baru" };
+  if (v.length < 40) return { ok: false, reason: "terlalu pendek untuk sebuah cookie sesi" };
+  return { ok: true, value: v };
+}
+
+/** Bentuk header Cookie yang dipakai Roblox. */
+export function cookieHeader(value) {
+  return ".ROBLOSECURITY=" + String(value == null ? "" : value);
+}
+
+/** UUID kecil untuk requestId/konteks game (sama gaya dengan V2). */
+function uuidish() {
+  const h = "0123456789abcdef";
+  const seg = (n) => Array.from({ length: n }, () => h[Math.floor(Math.random() * 16)]).join("");
+  return seg(8) + "-" + seg(4) + "-4" + seg(3) + "-" + (h[8 + Math.floor(Math.random() * 4)] + seg(3)) + "-" + seg(12);
+}
+
 export class RobloxError extends Error {
   constructor(message, info = {}) {
     super(message);
@@ -346,7 +397,17 @@ export function createRobloxClient(config = {}) {
 
   function authHeaders(auth) {
     if (!auth) throw new RobloxError("Kredensial belum diisi. Butuh Open Cloud API key atau login OAuth.", { code: 401 });
-    if (auth.kind === "apikey") {
+    // Jenis gabungan "cookie+apikey" / "cookie+oauth": cookie hanya untuk mengunduh,
+    // jadi untuk endpoint upload yang dipakai tetap bagian kunci/OAuth-nya.
+    const kind = String(auth.kind || "").replace(/^cookie\+/, "") || "apikey";
+    if (kind === "cookie") {
+      throw new RobloxError(
+        "Cookie sesi hanya untuk MENGUNDUH isi aset. Upload balik ke Roblox memakai Open Cloud API key " +
+          "(di aplikasi V2 juga begitu: apply_upload_auth = x-api-key). Isi juga kolom API key, atau login OAuth.",
+        { code: 401 }
+      );
+    }
+    if (kind === "apikey") {
       if (!auth.apiKey || String(auth.apiKey).length < 8) {
         throw new RobloxError("API key kosong atau terlalu pendek.", { code: 401 });
       }
@@ -411,12 +472,26 @@ export function createRobloxClient(config = {}) {
     return { ...(last || { res: null, ua: null }), attempts };
   }
 
-  async function resolveAsset(assetId, { placeId } = {}) {
+  async function resolveAsset(assetId, { placeId, cookie, gameId } = {}) {
     const id = String(assetId).trim();
     if (!/^\d{4,}$/.test(id)) {
       throw new RobloxError("Bukan asset ID yang valid: " + id, { code: 400 });
     }
     const attemptsAll = [];
+
+    // Jalur 0 (kalau mode cookie aktif): batch dengan sesi — inilah jalur V2 untuk
+    // aset yang dibatasi. Kalau gagal, jalur publik di bawah tetap dicoba.
+    let batchErr = null;
+    if (cookie) {
+      try {
+        const b = await resolveAssetBatch(id, { cookie, placeId, gameId });
+        if (b.location) {
+          return { assetId: id, locations: [b.location], assetTypeId: b.assetTypeId, viaBatch: true };
+        }
+      } catch (err) {
+        batchErr = err instanceof RobloxError ? err : new RobloxError(err.message || String(err));
+      }
+    }
 
     // jalur utama: v2 (jawabannya JSON berisi lokasi CDN)
     const v2 = new URL(`${cfg.assetDeliveryBase.replace(/\/$/, "")}/v2/assetId/${id}`);
@@ -436,6 +511,10 @@ export function createRobloxClient(config = {}) {
     // Roblox sering mengirim {"errors":[{"code":0,…}]} — kode HTTP-nya yang informatif
     // (401/403/429). Simpan supaya UI bisa membedakan butuh login vs diblokir vs kena batas.
     if (bodyErr && !Number(bodyErr.code)) bodyErr.code = res.status;
+    if (bodyErr && batchErr) {
+      bodyErr.message += " · lewat sesi: " + batchErr.message;
+      bodyErr.detail = { ...(bodyErr.detail || {}), batch: batchErr.message, batchStatus: batchErr.code };
+    }
     if (bodyErr) {
       // fallback: v1 mengembalikan redirect (302) ke CDN
       const v1 = new URL(`${cfg.assetDeliveryBase.replace(/\/$/, "")}/v1/asset`);
@@ -468,7 +547,7 @@ export function createRobloxClient(config = {}) {
 
   /* --- 2. download isi aset (TANPA auth) --- */
   async function downloadAsset(assetId, opts = {}) {
-    const resolved = await resolveAsset(assetId, opts);
+    const resolved = await resolveAsset(assetId, { placeId: opts.placeId, cookie: opts.cookie, gameId: opts.gameId });
     if (resolved.inline) {
       const bytes = resolved.inline;
       if (bytes.length > cfg.maxAssetBytes) {
@@ -1117,22 +1196,135 @@ export function createRobloxClient(config = {}) {
   }
 
   /**
+   * Jalur batch (assetdelivery v2/assets/batch) — INI jalur yang dipakai aplikasi V2
+   * untuk aset yang dibatasi: butuh sesi login yang dilampirkan sebagai cookie.
+   * V2 mengirim cookie dari keyring/browser; kita mengirim cookie yang user tempel
+   * (hanya kalau mode cookie diaktifkan operator) — tidak pernah disimpan.
+   */
+  async function resolveAssetBatch(assetId, { cookie, placeId, gameId } = {}) {
+    const id = String(assetId).trim();
+    if (!cookie) throw new RobloxError("Jalur batch butuh cookie sesi.", { code: 400 });
+    const url = `${cfg.assetDeliveryBase.replace(/\/$/, "")}/v2/assets/batch`;
+    const pid = String(placeId == null ? "" : placeId).trim();
+    const ensurePid = /^\d+$/.test(pid) && pid !== "0";
+
+    const item = {
+      assetName: "asset-" + id,
+      assetType: "Animation",
+      assetId: Number(id),
+      requestId: uuidish(),
+      clientInsert: true
+    };
+    if (ensurePid) { item.placeId = Number(pid); item.serverPlaceId = Number(pid); }
+
+    const headers = {
+      "content-type": "application/json",
+      accept: "application/json",
+      cookie: cookieHeader(cookie)
+    };
+    if (ensurePid) {
+      const gid = String(gameId || "").trim() || uuidish();
+      headers["Roblox-Place-Id"] = pid;
+      headers["Roblox-Game-Id"] = gid;
+      headers["Roblox-Session-Id"] = JSON.stringify({ SessionId: gid, GameId: gid, PlaceId: Number(pid) });
+    }
+
+    const tried = await fetchWithAgents(url, { method: "POST", headers, body: JSON.stringify([item]) });
+    const res = tried.res;
+    if (!res) {
+      throw new RobloxError(
+        "Tidak bisa menghubungi assetdelivery (batch): " + (tried.error && tried.error.message ? tried.error.message : "tanpa balasan"),
+        { code: 502, retryable: true }
+      );
+    }
+    const json = await res.json().catch(() => null);
+    if (res.status === 401 || res.status === 403) {
+      throw new RobloxError(
+        `Cookie sesi ditolak Roblox (HTTP ${res.status}). Pastikan kamu masih login di Roblox, lalu tempel cookie yang paling baru.`,
+        { code: res.status, detail: { endpoint: "v2/assets/batch" } }
+      );
+    }
+    if (!res.ok) {
+      const msg = (json && json.errors && json.errors[0] && json.errors[0].message) || ("HTTP " + res.status);
+      throw new RobloxError("Batch Roblox gagal: " + msg, { code: res.status, retryable: res.status === 429 || res.status >= 500 });
+    }
+
+    const arr = Array.isArray(json) ? json : (json && Array.isArray(json.assets) ? json.assets : []);
+    for (const it of arr) {
+      if (!it) continue;
+      const loc = it.location || it.Location;
+      if (typeof loc === "string" && loc) return { location: loc, assetTypeId: it.assetTypeId ?? null };
+      const errs = it.errors || it.Errors;
+      if (Array.isArray(errs) && errs.length) {
+        const msg = String(errs[0].message || errs[0].Message || "akses ditolak");
+        throw new RobloxError("Roblox menolak akses lewat sesi: " + msg, {
+          code: res.status, detail: { endpoint: "v2/assets/batch", accessDenied: /not authorized|access denied|permission/i.test(msg) }
+        });
+      }
+    }
+    throw new RobloxError("Jawaban batch tidak memuat lokasi aset.", { code: 404, detail: { endpoint: "v2/assets/batch" } });
+  }
+
+  /** Siapa pemilik cookie ini (dipakai untuk mengisi User ID otomatis). */
+  async function whoami(cookie) {
+    const norm = normalizeCookie(cookie);
+    if (!norm.ok) return { ok: false, status: 400, message: "Cookie sesi tidak dikenali: " + norm.reason + "." };
+    const url = `${cfg.usersBase.replace(/\/$/, "")}/v1/users/authenticated`;
+    let res;
+    try {
+      res = await doFetch(url, { headers: { accept: "application/json", cookie: cookieHeader(norm.value) } });
+    } catch (err) {
+      return { ok: false, status: 0, message: "Tidak bisa menghubungi Roblox: " + (err && err.message ? err.message : "sebab tidak jelas") };
+    }
+    const json = await res.json().catch(() => null);
+    if (res.status === 401) return { ok: false, status: 401, message: "Cookie sudah kedaluwarsa atau kamu sudah logout." };
+    if (!res.ok) {
+      const msg = (json && json.errors && json.errors[0] && json.errors[0].message) || ("HTTP " + res.status);
+      return { ok: false, status: res.status, message: msg };
+    }
+    return { ok: true, id: String(json && json.id || ""), name: json && json.name || null, displayName: json && json.displayName || null };
+  }
+
+  /**
    * Daftar aset terbaru milik seorang kreator (animasi = tipe 24).
    * Tanpa kredensial apa pun — memakai inventaris publik Roblox.
    * Untuk target grup, Roblox tidak menyediakan jalur publik: kembalikan supported:false.
    */
-  async function listCreatorAssets({ userId, groupId, assetTypeId = 24, limit = 25 } = {}) {
-    if (!userId) {
+  async function listCreatorAssets({ userId, groupId, assetTypeId = 24, limit = 25, cookie } = {}) {
+    const base = cfg.inventoryBase.replace(/\/$/, "");
+    const cookieHdr = cookie ? { cookie: cookieHeader(cookie) } : {};
+
+    // Target grup: tanpa sesi Roblox memang tidak ada jalur publik. Dengan sesi
+    // (dan kalau akunmu punya akses ke grup itu), Roblox menyediakan daftarnya.
+    if (!userId && groupId) {
+      if (!cookie) {
+        return {
+          supported: false,
+          reason: "Untuk daftar aset grup, Roblox butuh sesi login. Isi cookie (mode cookie) atau cek Creator Dashboard grup itu."
+        };
+      }
+      const gurl = `${base}/v2/groups/${encodeURIComponent(groupId)}/inventory/${assetTypeId}?limit=${limit}&sortOrder=Desc`;
+      const gtried = await fetchWithAgents(gurl, { headers: { accept: "application/json", ...cookieHdr } });
+      const gres = gtried.res;
+      const gjson = gres ? await gres.json().catch(() => null) : null;
+      if (gres && gres.ok) {
+        const items = (gjson && Array.isArray(gjson.data) ? gjson.data : []).map((x) => ({
+          assetId: String(x.assetId), name: x.assetName || x.name || null, created: x.created || null
+        }));
+        return { supported: true, via: "group-inventory", items };
+      }
       return {
         supported: false,
-        reason: groupId
-          ? "Roblox tidak menyediakan daftar aset publik untuk grup, jadi pemulihan otomatis tidak bisa dipakai untuk target grup."
-          : "User ID/Group ID tujuan belum diisi."
+        reason: "Daftar aset grup ditolak Roblox (HTTP " + (gres ? gres.status : "?") + ")" +
+          (gres && gres.status === 403 ? " — pastikan akunmu memang punya izin di grup itu." : ".") +
+          " Cek Creator Dashboard grup untuk ID-nya."
       };
     }
-    const base = cfg.inventoryBase.replace(/\/$/, "");
+    if (!userId) {
+      return { supported: false, reason: "User ID/Group ID tujuan belum diisi." };
+    }
     const url = `${base}/v2/users/${encodeURIComponent(userId)}/inventory/${assetTypeId}?limit=${limit}&sortOrder=Desc`;
-    const tried = await fetchWithAgents(url, { headers: { accept: "application/json" } });
+    const tried = await fetchWithAgents(url, { headers: { accept: "application/json", ...cookieHdr } });
     const res = tried.res;
     if (!res) {
       throw new RobloxError(
@@ -1203,6 +1395,10 @@ export function createRobloxClient(config = {}) {
     explainError,
     downloadAsset,
     uploadAsset,
+    resolveAssetBatch,
+    whoami,
+    normalizeCookie,
+    cookieHeader,
     probeUploadPermission,
     pollOperation,
     assetTypeName,

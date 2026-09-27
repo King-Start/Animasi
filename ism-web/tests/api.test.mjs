@@ -48,8 +48,14 @@ const seen = {
   uaBlocked: false,     // kalau true: UA berisi "ISpooferMotion" dijawab 403
   uaBlockAll: false,    // kalau true: semua UA dijawab 403 (tiru IP diblokir Roblox)
   neverConfirm: false,  // kalau true: operasi bernama khusus tidak pernah selesai
+  batch: [],            // permintaan ke assetdelivery batch (jalur ber-cookie)
+  batchCdn: [],         // isi CDN yang diambil lewat jalur batch
+  batchDenied: false,   // kalau true: batch menjawab "tidak berwenang"
+  whoami: [],           // percobaan membaca identitas dari cookie
+  whoamiReject: false,  // kalau true: cookie dianggap kedaluwarsa
   inventoryItems: [],   // isi daftar aset kreator (untuk uji pemulihan ID)
   inventoryDenied: false,
+  lockedAsset: null,    // ID yang hanya bisa diambil lewat batch ber-cookie
   inventory: [],        // percobaan membaca inventaris
   preflight: [],        // percobaan "uji izin upload" (tanpa berkas)
   introspect: [],       // kunci yang dikirim ke endpoint introspect
@@ -117,11 +123,24 @@ const mockServer = http.createServer(async (req, res) => {
     }
   }
 
+  /* --- CDN: lokasi hasil batch (jalur ber-cookie) --- */
+  if (url.pathname.startsWith("/cdn/batch-")) {
+    const id = url.pathname.replace(/^\/cdn\/batch-/, "").replace(/\.rbxm$/, "");
+    seen.batchCdn.push(url.pathname);
+    return send(200, fakeRbxm("batch:" + id));
+  }
+
   /* --- asset delivery v2 (lokasi CDN) --- */
   let m = url.pathname.match(/^\/v2\/assetId\/(\d+)$/);
   if (m) {
     const id = m[1];
     seen.delivery.push({ id, placeId: url.searchParams.get("placeId") });
+
+    // Aset yang dibatasi: jalur publik selalu ditolak (seperti di Roblox asli).
+    // Hanya jalur batch ber-cookie yang boleh mengambilnya.
+    if (seen.lockedAsset === id) {
+      return send(403, { errors: [{ code: 403, message: "User is not authorized to access Asset." }] });
+    }
 
     if (id === "404404404") {
       // Roblox menjawab HTTP 200 walau isinya error
@@ -263,6 +282,30 @@ const mockServer = http.createServer(async (req, res) => {
       });
     }
     return send(401, { code: 16, message: "API Key not found" });
+  }
+
+  /* --- assetdelivery batch (JALUR BER-COOKIE, seperti V2) --- */
+  if (url.pathname === "/v2/assets/batch" && req.method === "POST") {
+    const cookie = req.headers.cookie || "";
+    seen.batch.push({ cookie, body: raw });
+    if (!/ROBLOSECURITY=/.test(cookie)) {
+      return send(403, { errors: [{ code: 403, message: "Token Validation Failed" }] });
+    }
+    let req2 = [];
+    try { req2 = JSON.parse(raw); } catch { /* biarkan */ }
+    const rid = (req2[0] && req2[0].requestId) || "";
+    const wanted = String((req2[0] && req2[0].assetId) || "");
+    if (seen.batchDenied) {
+      return send(200, [{ requestId: rid, errors: [{ code: 403, message: "You are not authorized to access Asset." }] }]);
+    }
+    return send(200, [{ requestId: rid, location: `${MOCK}/cdn/batch-${wanted}.rbxm`, assetTypeId: 24 }]);
+  }
+
+  /* --- siapa pemilik cookie ini --- */
+  if (url.pathname === "/v1/users/authenticated" && req.method === "GET") {
+    seen.whoami.push({ cookie: req.headers.cookie || "" });
+    if (seen.whoamiReject) return send(401, { errors: [{ code: 401, message: "Unauthorized" }] });
+    return send(200, { id: 9904328104, name: "TesterISM", displayName: "Tester ISM" });
   }
 
   /* --- inventaris publik kreator (dipakai untuk memulihkan ID) --- */
@@ -1012,6 +1055,129 @@ heading("2l. Hasil dari sesi browser (userscript) muncul di situs");
     JSON.stringify({ pairs: mine2 && mine2.pairs, lines: String(h2.body.lines).slice(0, 60) }));
 }
 
+heading("2m. Mode cookie sesi (opsional) — unduh lewat sesi, upload tetap API key");
+{
+  const COOKIE = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
+
+  // 1) Server bawaan (mode cookie MATI): harus menolak dengan alasan yang jelas.
+  const off = await callJson("/api/whoami", { method: "POST", body: JSON.stringify({ cookie: COOKIE }) });
+  ok("mode mati → /api/whoami menolak dengan alasan", off.status === 400 && off.body.error === "cookie-mode-off", JSON.stringify(off.body));
+  ok("saran menyalakan ALLOW_COOKIE_AUTH disertakan", /ALLOW_COOKIE_AUTH/.test(String(off.body.message)), String(off.body.message));
+
+  const jobOff = await callJson("/api/jobs", {
+    method: "POST", body: JSON.stringify({ input: "180435571", cookie: COOKIE, options: { userId: "1234567" } })
+  });
+  ok("mode mati → job dengan cookie ditolak", jobOff.status === 400 && /cookie sesi/i.test(String(jobOff.body.error)), JSON.stringify(jobOff.body).slice(0, 160));
+  ok("cookie tidak pernah dikirim ke Roblox saat mode mati", seen.batch.length === 0 && seen.whoami.length === 0, JSON.stringify({ batch: seen.batch.length, whoami: seen.whoami.length }));
+
+  // 2) Instance kedua dengan ALLOW_COOKIE_AUTH=1
+  const cvPort = APP_PORT + 600;
+  const cv = (await import("node:child_process")).spawn(process.execPath, [SERVER], {
+    env: {
+      PORT: String(cvPort), HOST: "127.0.0.1", STATIC_ROOT: path.join(__dirname, "..", "..", "ism-site"),
+      SESSION_SECRET: "s3", ROBLOX_APIS_BASE: MOCK, ROBLOX_ASSET_DELIVERY_BASE: MOCK,
+      ROBLOX_USERS_BASE: MOCK, ROBLOX_INVENTORY_BASE: MOCK,
+      ALLOW_ASSET_HOSTS: "127.0.0.1", JOB_RATE_LIMIT: "100", CONCURRENCY: "1",
+      POLL_TIMEOUT_MS: "2500", REPORT_DIR: REPORT_DIR_UJI, ALLOW_COOKIE_AUTH: "1"
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let cvLog = "";
+  cv.stdout.on("data", (d) => { cvLog += d.toString(); });
+  cv.stderr.on("data", (d) => { cvLog += d.toString(); });
+  const cvBase = `http://127.0.0.1:${cvPort}`;
+  const cvCall = async (p, opts) => {
+    const res = await fetch(cvBase + p, opts);
+    const txt = await res.text();
+    let body = null; try { body = JSON.parse(txt); } catch { body = txt; }
+    return { status: res.status, body };
+  };
+  let cvReady = false;
+  for (let i = 0; i < 40; i++) {
+    try { if ((await fetch(cvBase + "/api/health")).ok) { cvReady = true; break; } } catch { /* tunggu */ }
+    await wait(120);
+  }
+  ok("instance mode-cookie siap", cvReady);
+  ok("log start memberi peringatan bahwa mode cookie aktif", /mode cookie sesi AKTIF/.test(cvLog), cvLog.slice(0, 200));
+
+  const cvHealth = await cvCall("/api/health");
+  ok("health melaporkan cookieAuth: true", cvHealth.body.cookieAuth === true, JSON.stringify(cvHealth.body.cookieAuth));
+  ok("catatan health menjelaskan batasnya (unduh saja, upload tetap kunci)",
+    /MENGUNDUH/.test(String(cvHealth.body.note)) && /upload tetap/i.test(String(cvHealth.body.note)), String(cvHealth.body.note).slice(0, 120));
+
+  // whoami: cookie dipakai untuk mengenali pemiliknya
+  const me = await cvCall("/api/whoami", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cookie: COOKIE })
+  });
+  ok("whoami membaca identitas dari cookie", me.body.ok === true && me.body.id === "9904328104", JSON.stringify(me.body));
+  ok("nama pengguna dikembalikan", me.body.name === "TesterISM", String(me.body.name));
+  ok("cookie diteruskan ke Roblox sebagai .ROBLOSECURITY", /ROBLOSECURITY=/.test(String(seen.whoami[0] && seen.whoami[0].cookie)), String(seen.whoami[0] && seen.whoami[0].cookie).slice(0, 40));
+
+  seen.whoamiReject = true;
+  const bad = await cvCall("/api/whoami", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cookie: COOKIE })
+  });
+  ok("cookie kedaluwarsa → pesan jelas", bad.body.ok === false && /kedaluwarsa|logout/i.test(String(bad.body.message)), JSON.stringify(bad.body));
+  seen.whoamiReject = false;
+
+  const bentuk = await cvCall("/api/whoami", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cookie: "pendek sekali" })
+  });
+  ok("bentuk cookie aneh ditolak dengan sebabnya", bentuk.body.ok === false && /tidak dikenali/i.test(String(bentuk.body.message)), JSON.stringify(bentuk.body));
+
+  // 3) Aset terkunci: jalur publik gagal, jalur cookie berhasil
+  seen.lockedAsset = "80301288746676";
+  const locked = await cvCall("/api/jobs", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ input: "80301288746676", apiKey: "key-uji-panjang", cookie: COOKIE, options: { userId: "1234567" } })
+  });
+  ok("job dengan cookie diterima", locked.status === 202, JSON.stringify(locked.body).slice(0, 160));
+  let snap = null;
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    const st = await cvCall("/api/jobs/" + locked.body.jobId);
+    snap = st.body;
+    if (!["queued", "running"].includes(snap.status)) break;
+  }
+  ok("aset terkunci berhasil diambil lewat sesi", snap.summary.done === 1, JSON.stringify(snap.items[0]).slice(0, 220));
+  ok("yang dipakai memang jalur batch ber-cookie", seen.batch.length >= 1, String(seen.batch.length));
+  ok("upload tetap memakai API key (bukan cookie)",
+    seen.uploads.some((u) => u.auth && u.auth.apiKey === "key-uji-panjang"), JSON.stringify(seen.uploads.slice(-1).map((u) => u.auth)));
+  ok("cookie TIDAK pernah ikut ke endpoint upload Roblox",
+    seen.uploads.every((u) => !/ROBLOSECURITY=/.test(String(u.cookieHeader || ""))),
+    JSON.stringify(seen.uploads.map((u) => u.cookieHeader)));
+
+  // 4) Tidak bocor ke laporan / log / respons job
+  await wait(400);
+  const rep = await cvCall("/api/jobs/" + locked.body.jobId + "/report");
+  const repText = String(rep.body.text || "");
+  ok("laporan tidak memuat nilai cookie", !repText.includes(COOKIE.replace(/^_\|WARNING[^|]*\|_/, "")) && !/ROBLOSECURITY/.test(repText), repText.slice(0, 160));
+  const snapTxt = JSON.stringify(snap);
+  ok("snapshot job tidak memuat cookie", !/ROBLOSECURITY|DO-NOT-SHARE/.test(snapTxt), snapTxt.slice(0, 200));
+  ok("log server tidak memuat nilai cookie", !cvLog.includes("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"), "cookie bocor di log!");
+  ok("log server mencatat peristiwa cookie tanpa nilainya", /mode cookie sesi AKTIF/.test(cvLog));
+
+  // 5) Cookie + tanpa User ID → User ID diisi otomatis dari sesinya
+  const auto = await cvCall("/api/jobs", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ input: "180435571", apiKey: "key-uji-panjang", cookie: COOKIE })
+  });
+  const autoSnap = await (async () => {
+    for (let i = 0; i < 60; i++) {
+      await wait(300);
+      const st = await cvCall("/api/jobs/" + auto.body.jobId);
+      if (!["queued", "running"].includes(st.body.status)) return st.body;
+    }
+    return null;
+  })();
+  ok("target User ID terisi otomatis dari cookie", auto.status === 202, JSON.stringify(auto.body).slice(0, 160));
+  ok("upload berjalan ke User ID hasil bacaan cookie",
+    Boolean(autoSnap) && autoSnap.summary.done === 1, JSON.stringify(autoSnap && autoSnap.summary));
+
+  cv.kill("SIGTERM");
+  seen.lockedAsset = null;
+}
+
 heading("2d. Penerjemah pesan error (explainError)");
 {
   const { createRobloxClient } = await import(path.join(__dirname, "..", "lib", "roblox.mjs"));
@@ -1311,11 +1477,16 @@ heading("8. Tidak ada jalur cookie (titik paling penting)");
   const src = await (await fetch(BASE + "/spoof.html")).text();
   // Halaman boleh MENYEBUT aturan cookie (itu penjelasan untuk user), tapi tidak boleh:
   // punya kolom input cookie, atau menulis/mengirim cookie bernama itu.
-  ok("halaman spoofer tidak punya kolom cookie",
-    !/<input[^>]*name=["']?[^"'>]*cookie/i.test(src) &&
-    !/<input[^>]*id=["']?[^"'>]*cookie/i.test(src) &&
-    !/document\.cookie\s*=[^;]*ROBLOSECURITY/i.test(src),
-    "ada kolom/penulisan cookie di halaman");
+  // Mode cookie opsional boleh ada kolomnya — TAPI dengan pagar ketat:
+  //  tidak menyentuh document.cookie, tidak menulis ke localStorage, dan ada peringatan.
+  ok("halaman tidak membaca/menulis document.cookie",
+    !/document\.cookie/.test(src), "ada akses document.cookie");
+  ok("halaman tidak menyimpan cookie ke localStorage/sessionStorage",
+    !/localStorage\.setItem\([^)]*cookie/i.test(src) && !/sessionStorage\.setItem\([^)]*cookie/i.test(src),
+    "ada penulisan cookie ke storage");
+  ok("kolom cookie diberi pagar peringatan (server sendiri, bukan preview/sandbox)",
+    /server milikmu sendiri/i.test(src) && /[Jj]angan tempel di preview/i.test(src),
+    "peringatan cookie tidak jelas");
   const idxSrc = await (await fetch(BASE + "/index.html")).text();
   ok("halaman spoofer memakai token tema resmi ISM (mint #a7f3d0)",
     /--ism-primary:#a7f3d0/.test(src) && /--primary|--green:var\(--ism-success\)/.test(src),
@@ -1323,11 +1494,12 @@ heading("8. Tidak ada jalur cookie (titik paling penting)");
   ok("halaman utama juga memakai token tema resmi",
     /--ism-primary:#a7f3d0/.test(idxSrc), "index.html belum memakai token ISM");
 
-  ok("penyebutan .ROBLOSECURITY di halaman hanya sebagai penjelasan",
-    (src.match(/ROBLOSECURITY/g) || []).length <= 2 &&
-    /tidak menerima, meneruskan, maupun menyimpan cookie/i.test(src),
+  ok("aturan cookie di halaman gamblang (tidak ditulis ke disk, tidak masuk log/laporan)",
+    /tidak menyimpan cookie \.ROBLOSECURITY ke disk/i.test(src) && /log\/laporan/i.test(src),
+    "kalimat aturan cookie tidak ditemukan");
+  ok("penyebutan .ROBLOSECURITY tetap secukupnya (bukan alur utama)",
+    (src.match(/ROBLOSECURITY/g) || []).length <= 8,
     "jumlah penyebutan: " + (src.match(/ROBLOSECURITY/g) || []).length);
-  ok("halaman menjelaskan kenapa tanpa cookie", /tidak ada kolom cookie/i.test(src));
   ok("halaman mengarahkan ke Open Cloud API key / OAuth", /Open Cloud API key/.test(src) && /OAuth/.test(src));
 }
 

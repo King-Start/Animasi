@@ -123,6 +123,11 @@
   .errhint .inline{display:inline-block;margin-top:4px;padding:2px 8px;font:600 11px/1.6 var(--mono);border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;cursor:pointer}
   .cred{margin-top:8px;font:11.8px/1.6 var(--mono);color:var(--mut-2)}
   .cred.bad{color:#ffb3b3}
+  .cookiebox{margin-top:12px;padding:11px 12px;border-radius:10px;border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.07)}
+  .cookiebox b{color:#fde68a}
+  .cookiebox .row{margin-top:8px}
+  .cookiebox small{display:block;margin-top:7px;color:var(--mut-2);font-size:11.4px;line-height:1.5}
+  .cookiebox input{flex:1}
   .st.pending-confirm{background:rgba(251,191,36,.14);color:#fde68a;border:1px solid rgba(251,191,36,.35)}
   .sums{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
   @media(max-width:640px){.sums{grid-template-columns:repeat(3,1fr)}}
@@ -178,8 +183,11 @@
     ke tombol <b>Replace Ids</b> di plugin Studio.
   </p>
   <div class="notice warn">
-    <b>Tidak ada kolom cookie di halaman ini, dan itu disengaja.</b> Halaman web tidak boleh meminta sesi akun Roblox-mu.
-    Kredensial yang dipakai di sini cuma <b>Open Cloud API key</b> (bisa dibatasi scope &amp; dicabut kapan saja) atau login OAuth resmi.
+    <b>Kredensial utama di sini: Open Cloud API key</b> (bisa dibatasi scope &amp; dicabut kapan saja) atau login OAuth resmi.
+    Ada juga <b>mode cookie sesi yang opsional</b> — hanya muncul kalau operator server menyalakannya
+    (<span class="mono">ALLOW_COOKIE_AUTH=1</span>) — dan dipakai <b>hanya untuk mengunduh</b> isi aset yang dibatasi Roblox,
+    seperti cara aplikasi V2 membaca sesi browser. Server tidak menulisnya ke disk, tidak memasukkannya ke log/laporan, dan
+    membuangnya begitu job selesai. Kalau kamu tidak butuh, lewati saja — userscript lebih aman.
   </div>
   <div class="notice err hide" id="serverDown">
     <b>Server belum jalan.</b> Halaman ini butuh backend-nya karena upload tidak bisa dilakukan dari browser.
@@ -319,6 +327,23 @@ https://www.roblox.com/library/1234567893/apa-pun
         <button class="btn danger hide" id="cancelBtn" type="button">Batalkan</button>
       </div>
       <p class="hint" id="runHint">Isi daftar ID dan tujuan upload dulu.</p>
+
+      <div class="cookiebox hide" id="cookieBox">
+        <b>Mode cookie sesi (opsional)</b> — dipakai hanya untuk <b>mengunduh</b> isi aset yang dibatasi
+        Roblox, seperti cara aplikasi V2 membaca sesi browser. Upload tetap memakai API key.
+        <div class="row">
+          <input type="password" id="cookieInput" placeholder=".ROBLOSECURITY=…  (tempel cookie-mu)" autocomplete="off" spellcheck="false">
+          <button class="btn sm ghost" id="cookieUseBtn" type="button" style="flex:none">Pakai &amp; isi User ID</button>
+          <button class="btn sm ghost" id="cookieClearBtn" type="button" style="flex:none">Hapus</button>
+        </div>
+        <small>
+          Cookie = akses penuh ke akunmu. Tempel <b>hanya di server milikmu sendiri</b> (localhost atau
+          Railway-mu yang sudah pakai ACCESS_PASSWORD). <b>Jangan tempel di preview asisten/sandbox</b> atau
+          di situs orang lain. Server tidak menulisnya ke disk, tidak memasukkannya ke log/laporan, dan
+          membuangnya begitu job selesai; cookie hanya dikirim ke Roblox, tidak ke pihak lain.
+          Kalau tidak butuh, userscript lebih aman.
+        </small>
+      </div>
       <p class="hint">
         <b>Belum punya API key?</b> Tekan <b>Uji ambil saja</b> — tahap ini tidak butuh kredensial apa pun.
         Kamu akan lihat ID mana yang isinya bisa ditarik (beserta ukuran + hash), dan mana yang butuh file lokal.
@@ -441,7 +466,8 @@ https://www.roblox.com/library/1234567893/apa-pun
   var $ = function (s) { return document.querySelector(s); };
   var state = {
     health: null, jobId: null, es: null, poll: null, items: [], fmt: "plugin",
-    output: { plugin: "", plain: "", pairs: "" }, running: false, file: null, handoffLines: ""
+    output: { plugin: "", plain: "", pairs: "" }, running: false, file: null, handoffLines: "",
+    cookie: "" // hanya di memori halaman: tidak pernah disimpan ke localStorage
   };
 
   /* ---------------- util ---------------- */
@@ -500,6 +526,8 @@ https://www.roblox.com/library/1234567893/apa-pun
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(function (h) {
         state.health = h;
+        // Kolom cookie hanya muncul kalau operator server menyalakan ALLOW_COOKIE_AUTH=1.
+        if ($("#cookieBox")) $("#cookieBox").className = h.cookieAuth ? "cookiebox" : "cookiebox hide";
         $("#healthTag").textContent = "server v" + h.version + " · online";
         $("#healthTag").style.color = "var(--green)";
         $("#serverDown").className = "notice err hide";
@@ -618,6 +646,7 @@ https://www.roblox.com/library/1234567893/apa-pun
       body: JSON.stringify({
         input: input,
         apiKey: $("#apiKey").value.trim(),
+        cookie: state.cookie || undefined, // hanya kalau user mengisinya (mode cookie)
         options: {
           userId: $("#userId").value.trim(),
           groupId: $("#groupId").value.trim(),
@@ -877,6 +906,34 @@ https://www.roblox.com/library/1234567893/apa-pun
     $("#fileInfo").innerHTML = '<span class="mono" style="font-size:12.5px">' + esc(f.name) + " · " + (f.size / 1024).toFixed(1) + " KB</span>";
     refreshRun();
   }
+
+  /* ---- Cookie sesi (opsional): hanya di memori halaman ---- */
+  function pakaiCookie() {
+    var v = $("#cookieInput") ? $("#cookieInput").value.trim() : "";
+    if (!v) { logLine("cookie belum diisi", "warn"); return; }
+    logLine("memeriksa cookie ke Roblox (server tidak menyimpannya)…");
+    api("/api/whoami", { method: "POST", body: JSON.stringify({ cookie: v }) }).then(function (r) {
+      var b = r.body || {};
+      if (!r.ok || !b.ok) {
+        logLine("cookie tidak bisa dipakai: " + (b.message || b.error || r.status), "err");
+        if (b.error === "cookie-mode-off") logLine("server ini belum menyalakan mode cookie (ALLOW_COOKIE_AUTH=1)", "warn");
+        return;
+      }
+      state.cookie = v;
+      if ($("#userId") && !$("#userId").value.trim() && b.id) $("#userId").value = b.id;
+      logLine("cookie diterima Roblox · login sebagai " + (b.displayName || b.name || b.id) + " (User ID " + b.id + ")", "ok");
+      logLine("cookie hanya ada di memori halaman ini — hilang saat tab ditutup atau kamu tekan Hapus.", "ok");
+    }, function () { logLine("tidak bisa menghubungi server", "err"); });
+  }
+
+  function hapusCookie() {
+    state.cookie = "";
+    if ($("#cookieInput")) $("#cookieInput").value = "";
+    logLine("cookie dihapus dari memori halaman ini", "ok");
+  }
+
+  if ($("#cookieUseBtn")) $("#cookieUseBtn").addEventListener("click", pakaiCookie);
+  if ($("#cookieClearBtn")) $("#cookieClearBtn").addEventListener("click", hapusCookie);
 
   /* ---- Mode ekstensi: serah-terima ke userscript lewat URL ---- */
   function extIds() {
@@ -1207,7 +1264,7 @@ https://www.roblox.com/library/1234567893/apa-pun
 
   /* aturan cookie ditulis di satu tempat saja, supaya tidak ada dua versi kalimat */
   (function () {
-    var rule = "server ini tidak menerima, meneruskan, maupun menyimpan cookie .ROBLOSECURITY";
+    var rule = "server ini tidak menyimpan cookie .ROBLOSECURITY ke disk, tidak memasukkannya ke log/laporan, dan hanya mengirimkannya ke Roblox";
     Array.prototype.forEach.call(document.querySelectorAll(".hint, .hint *"), function (el) {
       if (el.children.length === 0 && el.textContent.indexOf("{{COOKIE_RULE}}") >= 0) {
         el.textContent = el.textContent.replace("{{COOKIE_RULE}}", rule);
