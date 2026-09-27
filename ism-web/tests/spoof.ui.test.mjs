@@ -51,6 +51,16 @@ let healthBody = {
 };
 let meBody = { loggedIn: false };
 let jobSnapshot = null;
+let checkKeyBody = {
+  ok: false, usingServerKey: false,
+  findings: [
+    { level: "error", message: "API Assets sudah ada, tapi operasi Write belum dicentang (yang ada: read). Upload butuh Read + Write." },
+    { level: "info", message: "Buka create.roblox.com untuk memperbaiki." }
+  ],
+  profile: { id: "1234567", name: "TesterISM", displayName: "Tester ISM" },
+  key: { enabled: true, expired: false, expiresAt: "2027-01-01T00:00:00Z", name: "ISM_TEST" },
+  scopes: [{ name: "asset", operations: ["read"], userIds: ["*"], groupIds: [] }]
+};
 
 class FakeEventSource {
   constructor(url) { this.url = url; FakeEventSource.last = this; }
@@ -87,6 +97,9 @@ const dom = new JSDOM(html, {
       if (path.endsWith("/api/parse")) {
         const ids = String((JSON.parse(opts.body).input || "").match(/\d{6,}/g) || []);
         return reply(200, { total: ids.length, items: ids.map((id) => ({ id })), typeHint: null });
+      }
+      if (path.endsWith("/api/check-key")) {
+        return reply(200, checkKeyBody);
       }
       if (path.endsWith("/api/jobs") && (!opts || opts.method === "POST")) {
         const sent = JSON.parse(opts.body);
@@ -175,10 +188,11 @@ ok("ringkasan total = 2", $("#sTotal").textContent === "2");
 
 FakeEventSource.last.emit({ type: "item", id: "180435571", status: "fetching" });
 FakeEventSource.last.emit({ type: "item", id: "180435571", status: "done", newId: "9876543210", ms: 1234, sha256: "abcdef1234567890" });
-FakeEventSource.last.emit({ type: "item", id: "180426354", status: "error", error: "Authentication required to access Asset." });
+FakeEventSource.last.emit({ type: "item", id: "180426354", status: "error", error: "Authentication required to access Asset.", hint: "Isi aset ini dibatasi Roblox atau kreatornya. Pakai tab 'Dari file lokal'." });
 ok("status sukses tampil di tabel", /selesai/.test($("#rows").textContent));
 ok("ID baru tampil sebagai tautan library", /roblox\.com\/library\/9876543210/.test($("#rows").innerHTML));
 ok("error item tampil di tabel", /Authentication required/.test($("#rows").textContent));
+  ok("petunjuk perbaikan ikut tampil di tabel", /Dari file lokal/.test($("#rows").textContent), $("#rows").textContent.slice(0, 200));
 ok("log mencatat hasil sukses", /9876543210/.test($("#log").textContent), JSON.stringify($("#log").textContent.slice(0, 300)));
 ok("log mencatat kegagalan", /gagal/.test($("#log").textContent));
 
@@ -208,6 +222,53 @@ click($("#dlBtn"));
 await wait(20);
 ok("copy & download tidak error", errors.length === 0, errors.join(" | "));
 ok("download .txt terpicu", (win.__downloads || 0) >= 1, String(win.__downloads));
+
+heading("7b. Tombol 'Cek kunci' (diagnosa)");
+{
+  type($("#apiKey"), "kunci-uji-panjang-1234567890");
+  click($("#checkKeyBtn"));
+  await wait(120);
+
+  const box = $("#keyCheck");
+  ok("panel hasil muncul (tidak lagi disembunyikan)", !box.className.includes("hide"));
+  ok("panel memakai gaya error karena ada temuan", /notice err/.test(box.className), box.className);
+  ok("temuan error ditampilkan dengan penanda ✗", /Write belum dicentang/.test(box.textContent) && box.innerHTML.includes("\u2717"), box.textContent.slice(0, 120));
+  ok("temuan info juga ditampilkan", /create\.roblox\.com/.test(box.textContent));
+  ok("identitas pemilik kunci ditampilkan", /@TesterISM/.test(box.textContent) && /User ID 1234567/.test(box.textContent), box.textContent);
+  ok("masa berlaku kunci ditampilkan", /kedaluwarsa: 2027-01-01/.test(box.textContent), box.textContent);
+  ok("scope kunci ditampilkan", /asset\[read\]/.test(box.textContent), box.textContent);
+  ok("temuan error juga masuk ke log", /Write belum dicentang/.test($("#log").textContent));
+
+  // sekarang skenario kunci sehat
+  checkKeyBody = {
+    ok: true, usingServerKey: true,
+    findings: [{ level: "ok", message: "Kunci valid dan siap dipakai untuk upload." }],
+    profile: { id: "1234567", name: "TesterISM", displayName: "Tester ISM" },
+    key: { enabled: true, expired: false, expiresAt: null, name: "ISM_TEST" },
+    scopes: [{ name: "asset", operations: ["read", "write"], userIds: ["*"], groupIds: ["33445566"] }]
+  };
+  click($("#checkKeyBtn"));
+  await wait(120);
+  ok("kunci sehat → panel hijau", /notice ok/.test($("#keyCheck").className), $("#keyCheck").className);
+  ok("pesan siap dipakai muncul", /siap dipakai/i.test($("#keyCheck").textContent));
+  ok("ditandai memakai kunci dari server", /memakai kunci dari server/.test($("#keyCheck").textContent), $("#keyCheck").textContent);
+  ok("log mencatat kunci valid", /cek kunci: valid/.test($("#log").textContent));
+
+  // kunci kosong & tanpa kunci server → tidak boleh request
+  const callsBefore = calls.filter((c) => c.path.endsWith("/api/check-key")).length;
+  type($("#apiKey"), "");
+  const healthBefore = state_health_serverKey();
+  if (!healthBefore) {
+    click($("#checkKeyBtn"));
+    await wait(80);
+    ok("kunci kosong tanpa kunci server → peringatan, tanpa request",
+      calls.filter((c) => c.path.endsWith("/api/check-key")).length === callsBefore && /Isi kunci API dulu/.test($("#keyCheck").textContent), $("#keyCheck").textContent);
+  } else {
+    ok("(dilewati: server punya kunci sendiri)", true);
+  }
+}
+
+function state_health_serverKey() { return false; }
 
 heading("8. Sesi OAuth & gate");
 meBody = { loggedIn: true, username: "TesterISM", userId: "1234567" };

@@ -53,6 +53,7 @@ const cfg = {
     apisBase: process.env.ROBLOX_APIS_BASE || undefined,
     assetDeliveryBase: process.env.ROBLOX_ASSET_DELIVERY_BASE || undefined,
     oauthBase: process.env.ROBLOX_OAUTH_BASE || undefined,
+    usersBase: process.env.ROBLOX_USERS_BASE || undefined,
     // host CDN tambahan (mirror / server tiruan saat pengujian)
     allowedAssetHosts: (process.env.ALLOW_ASSET_HOSTS || "").split(",").map((s) => s.trim()).filter(Boolean)
   }
@@ -201,7 +202,7 @@ function snapshot(job) {
     createdAt: job.createdAt,
     summary: job.summary,
     items: job.items.map((it) => ({
-      id: it.id, status: it.status, newId: it.newId || null, error: it.error || null,
+      id: it.id, status: it.status, newId: it.newId || null, error: it.error || null, hint: it.hint || null,
       bytesLength: it.bytesLength || null, sha256: it.sha256 || null,
       assetType: it.assetType || null, ms: it.ms || null, name: it.name || null,
       creatorId: it.creatorId || null, creatorType: it.creatorType || null
@@ -286,10 +287,11 @@ async function processItem(job, item) {
       }
       item.status = "error";
       item.error = re.message;
+      item.hint = roblox.explainError(re.message) || null;
       item.ms = now() - t0;
       job.summary.error++;
       job.summary.pending--;
-      emit(job, { type: "item", id: item.id, status: "error", error: item.error, ms: item.ms });
+      emit(job, { type: "item", id: item.id, status: "error", error: item.error, hint: item.hint, ms: item.ms });
       return;
     }
   }
@@ -658,6 +660,23 @@ const server = http.createServer(async (req, res) => {
         note: "Uji ini hanya mengambil isi aset — tidak ada upload, tidak ada kredensial yang dipakai.",
         results
       });
+    }
+
+    /* ---------- diagnosa kunci API: tanpa upload, tanpa efek samping ---------- */
+    if (p === "/api/check-key" && req.method === "POST") {
+      if (!rateLimit(req, "checkkey", 20, 60_000)) {
+        return json(res, 429, { error: "rate-limited", message: "Terlalu banyak percobaan cek kunci. Tunggu sebentar." });
+      }
+      const body = await readJson(req);
+      const key = body.apiKey || cfg.serverApiKey || "";
+      const result = await roblox.checkKey({
+        apiKey: key,
+        userId: String(body.userId || "").trim() || null,
+        groupId: String(body.groupId || "").trim() || null
+      });
+      // jangan pernah menuliskan kunci ke log, bahkan yang teredaksi sekalipun
+      log(`check-key: target=${body.groupId ? "group " + body.groupId : body.userId ? "user " + body.userId : "belum diisi"} → ${result.ok ? "OK" : "ADA MASALAH"}`);
+      return json(res, 200, { ...result, usingServerKey: !body.apiKey && Boolean(cfg.serverApiKey) });
     }
 
     /* ---------- util: parse input saja (dipakai UI untuk pratinjau) ---------- */

@@ -149,6 +149,8 @@ server di Railway bisa menjangkau Roblox.
 | OAuth: `invalid redirect_uri` | Redirect URI di aplikasi Roblox harus sama persis dengan `https://URL-KAMU/api/oauth/callback`. Perhatikan `http` vs `https` dan ada/tidaknya trailing slash. |
 | OAuth: `state tidak cocok` | Cookie sesi hilang antar-request. Set `SESSION_SECRET` tetap (jangan biarkan acak) supaya sesi tidak batal saat instance restart. |
 | Upload lambat / timeout | Roblox memproses aset secara asinkron. Server menunggu sampai 90 detik per item; kalau lewat, cek Creator Dashboard — asetnya sering tetap muncul. |
+| **Upload tidak bisa / "Invalid API Key"** | Klik **Cek kunci dulu** di halaman spoofer. Panel akan menyebut sebab persisnya: format kunci salah, kunci dicabut, IP dibatasi, kunci kedaluwarsa, scope Assets/Write belum dicentang, atau User ID ≠ pemilik kunci. |
+| **Ambil aset gagal** ("Authentication required to access Asset") | Aset dibatasi Roblox/kreatornya, jadi tidak bisa diambil tanpa login. Pakai tab **Dari file lokal** — kamu unduh sendiri file `.rbxm`-nya, server cuma mengurus upload. |
 | Ingin batas lebih longgar | Naikkan `CONCURRENCY` (maks 6) atau `MAX_ITEMS`; atau `JOB_RATE_LIMIT` kalau banyak orang memakai. |
 
 ---

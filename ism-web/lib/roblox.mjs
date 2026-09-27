@@ -17,6 +17,7 @@ export const DEFAULTS = {
   apisBase: "https://apis.roblox.com",
   assetDeliveryBase: "https://assetdelivery.roblox.com",
   oauthBase: "https://apis.roblox.com/oauth/v1",
+  usersBase: "https://users.roblox.com",
   maxAssetBytes: 20 * 1024 * 1024, // batas 20 MB dari dokumentasi Open Cloud
   userAgent: "ISpooferMotion-Web/1.0 (+https://github.com/ISpooferMotion)",
   allowedAssetHosts: [] // tambahan host yang diizinkan; default hanya host Roblox
@@ -216,6 +217,63 @@ export async function fetchUserInfo(cfg, accessToken) {
   });
   if (!res.ok) return null;
   return res.json().catch(() => null); // { sub, preferred_username, ... }
+}
+
+/* -------------------------------------------- normalisasi & pesan error */
+
+/**
+ * Kunci API sering tersalin dengan spasi/newline/kutip di ujung — itu saja
+ * sudah cukup bikin Roblox menolak dengan "not provided in a valid format".
+ */
+export function normalizeApiKey(raw) {
+  return String(raw == null ? "" : raw)
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, "");
+}
+
+/**
+ * Terjemahkan pesan error Roblox jadi penjelasan + langkah perbaikan.
+ * Dipakai agar user tahu harus apa, bukan cuma melihat kalimat Inggris mentah.
+ */
+export function explainError(message) {
+  const m = String(message || "");
+  const rules = [
+    [/not provided in a valid format/i,
+      "Format kunci tidak valid — biasanya kuncinya kepotong atau ada spasi ikut tersalin. Copy ulang SELURUH kunci dari Creator Dashboard, API Keys."],
+    [/invalid api key/i,
+      "Kunci API ditolak: salah, sudah dicabut, atau tidak lengkap. Copy ulang di create.roblox.com, Credentials, API Keys."],
+    [/ip address|restrict|not allowed from/i,
+      "Kunci API ini dibatasi IP. Matikan 'Restrict IP addresses' di pengaturan kunci, atau tambahkan IP server ini ke daftar izin."],
+    [/expired/i,
+      "Kunci API sudah kedaluwarsa. Buat kunci baru dengan masa berlaku lebih panjang."],
+    [/does not have permission|permission to perform|insufficient|not authorized to create|unauthorized|forbidden/i,
+      "Kunci API belum diberi izin lengkap. Di key-nya: Access Permissions, pilih API Assets, centang operasi Read DAN Write."],
+    [/creator|authorized user|must match/i,
+      "Target upload tidak cocok dengan pemilik kunci. User ID tujuan harus sama dengan akun pemilik kunci API (atau pakai Group ID yang kuncinya punya akses)."],
+    [/moderat|pending review/i,
+      "Aset masuk moderasi Roblox. Cek Creator Dashboard beberapa saat lagi."],
+    [/too many requests|rate limit|quota/i,
+      "Kena batas/kuota Roblox. Tunggu sebentar lalu jalankan ulang."],
+    [/file size|too large|exceeds|20 ?MB|maximum size/i,
+      "File melebihi batas 20 MB per aset."],
+    [/assettype|asset type/i,
+      "Tipe aset tidak didukung untuk upload. Animasi: .rbxm/.rbxmx. Audio: .ogg/.mp3/.wav/.flac."],
+    [/invalid file|corrupt|malformed|failed to parse/i,
+      "File-nya tidak bisa dibaca Roblox. Ekspor ulang dari Roblox Studio sebagai .rbxm atau .rbxmx."],
+    [/authentication required to access asset/i,
+      "Isi aset ini dibatasi Roblox atau kreatornya, jadi tidak bisa diambil tanpa login. Pakai tab 'Dari file lokal': kamu sediakan filenya, server hanya mengurus upload."],
+    [/was not found|not found/i,
+      "Asset ID tidak ditemukan: ID-nya salah, sudah dihapus, atau bukan aset publik."],
+    [/wrong-type/i,
+      "ID ini bukan Animation (mungkin Audio/Decal/Mesh). Untuk tipe lain, pakai tab 'Dari file lokal'."],
+    [/timeout|belum selesai/i,
+      "Roblox belum selesai memproses. Cek Creator Dashboard, asetnya sering tetap muncul."],
+    [/gzip|decompress|incorrect header/i,
+      "Isi aset dari CDN rusak saat diunduh. Coba jalankan ulang."]
+  ];
+  for (const [re, hint] of rules) if (re.test(m)) return hint;
+  return null;
 }
 
 /* ------------------------------------------------------------- klien */
@@ -430,9 +488,152 @@ export function createRobloxClient(config = {}) {
     });
   }
 
+  /* --- diagnosa: periksa kunci API tanpa meng-upload apa pun --- */
+  async function introspectKey(apiKey) {
+    const url = `${cfg.apisBase.replace(/\/$/, "")}/api-keys/v1/introspect`;
+    const res = await doFetch(url, {
+      method: "POST",
+      headers: {
+        "x-api-key": normalizeApiKey(apiKey),
+        "content-type": "application/json",
+        accept: "application/json"
+      },
+      body: "{}"
+    });
+    const json = await res.json().catch(() => null);
+    return { status: res.status, ok: res.ok, body: json };
+  }
+
+  async function getUserProfile(userId) {
+    try {
+      const base = cfg.usersBase.replace(/\/$/, "");
+      const res = await doFetch(`${base}/v1/users/${encodeURIComponent(String(userId))}`, {
+        headers: { accept: "application/json" }
+      });
+      if (!res.ok) return null;
+      const j = await res.json();
+      return { id: String(j.id ?? userId), name: j.name || null, displayName: j.displayName || null };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Periksa kunci: aktif? punya izin Assets:Write? boleh dipakai untuk target
+   * User ID / Group ID yang diisi? Hasilnya daftar temuan yang bisa langsung
+   * ditindaklanjuti, bukan cuma "gagal".
+   */
+  async function checkKey({ apiKey, userId, groupId } = {}) {
+    const findings = [];
+    const key = normalizeApiKey(apiKey);
+    if (!key) {
+      return { ok: false, findings: [{ level: "error", message: "Kunci API masih kosong." }] };
+    }
+    if (key.length < 30) {
+      findings.push({
+        level: "warn",
+        message: `Panjang kunci hanya ${key.length} karakter. Kunci Roblox jauh lebih panjang, jadi kemungkinan tersalin tidak lengkap.`
+      });
+    }
+
+    const intro = await introspectKey(key);
+    const raw = (intro.body && (intro.body.message || (intro.body.errors && intro.body.errors[0] && intro.body.errors[0].message))) || ("HTTP " + intro.status);
+
+    if (intro.status === 400 && /valid format/i.test(raw)) {
+      findings.push({
+        level: "error",
+        message: 'Roblox menjawab: "API Key is not provided in a valid format". Copy ulang seluruh kunci dari Creator Dashboard, pastikan tidak ada spasi atau kutip yang ikut tersalin.'
+      });
+      return { ok: false, findings };
+    }
+    if (intro.status === 401 || intro.status === 403) {
+      findings.push({ level: "error", message: `Kunci ditolak Roblox: ${raw}. Kunci salah, sudah dicabut, atau IP server ini tidak ada di daftar izin.` });
+      findings.push({ level: "info", message: "Buat/copy ulang di create.roblox.com, Credentials, API Keys." });
+      return { ok: false, findings };
+    }
+    if (!intro.ok || !intro.body) {
+      findings.push({ level: "error", message: "Tidak bisa memeriksa kunci: " + raw });
+      return { ok: false, findings };
+    }
+
+    const info = intro.body;
+    const scopes = Array.isArray(info.scopes) ? info.scopes : [];
+    const assetScope = scopes.find((sc) => /^asset$/i.test(String(sc.name || "")));
+    const ops = ((assetScope && assetScope.operations) || []).map(String);
+    const hasWrite = ops.some((o) => /write/i.test(o));
+    const ownerId = info.authorizedUserId != null ? String(info.authorizedUserId) : null;
+
+    if (info.enabled === false) {
+      findings.push({ level: "error", message: "Kunci ini sedang dinonaktifkan di Creator Dashboard (Enabled: false)." });
+    }
+    if (info.expired) {
+      findings.push({ level: "error", message: "Kunci ini sudah kedaluwarsa" + (info.expirationTimeUtc ? " (" + info.expirationTimeUtc + ")" : "") + ". Buat kunci baru." });
+    }
+    if (!assetScope) {
+      findings.push({ level: "error", message: 'Kunci belum diberi API "Assets". Di Access Permissions: Add API System, pilih Assets.' });
+    } else if (!hasWrite) {
+      findings.push({
+        level: "error",
+        message: `API Assets sudah ada, tapi operasi Write belum dicentang (yang ada: ${ops.join(", ") || "kosong"}). Upload butuh Read + Write.`
+      });
+    }
+
+    if (groupId) {
+      const gids = ((assetScope && assetScope.groupIds) || []).map(String);
+      if (!gids.length) {
+        findings.push({
+          level: "error",
+          message: "Kunci tidak memberi akses grup mana pun, jadi tidak bisa upload ke Group ID ini. Tambahkan grupnya di Access Permissions, atau kosongkan Group ID dan pakai User ID akunmu."
+        });
+      } else if (!(gids.includes("*") || gids.includes(String(groupId)))) {
+        findings.push({
+          level: "error",
+          message: `Kunci tidak punya akses ke grup ${groupId} (yang diizinkan: ${gids.join(", ")}). Tambahkan grup itu di key-nya, atau ganti target.`
+        });
+      }
+    } else if (userId) {
+      if (ownerId && ownerId !== String(userId)) {
+        const prof = await getUserProfile(ownerId);
+        findings.push({
+          level: "error",
+          message: `User ID tujuan (${userId}) bukan pemilik kunci ini. Kunci ini milik User ID ${ownerId}${prof && prof.name ? " (@" + prof.name + ")" : ""}. Ganti kolom User ID menjadi ${ownerId}.`
+        });
+      }
+    } else {
+      findings.push({ level: "info", message: "Isi User ID atau Group ID tujuan supaya kecocokan kunci bisa diperiksa." });
+    }
+
+    const profile = ownerId ? await getUserProfile(ownerId) : null;
+    const ok = !findings.some((f) => f.level === "error");
+    if (ok) findings.unshift({ level: "ok", message: "Kunci valid dan siap dipakai untuk upload." });
+
+    return {
+      ok,
+      findings,
+      profile,
+      key: {
+        enabled: info.enabled !== false,
+        expired: !!info.expired,
+        expiresAt: info.expirationTimeUtc || null,
+        name: info.name || null
+      },
+      scopes: scopes.map((sc) => ({
+        name: sc.name,
+        operations: sc.operations,
+        userIds: sc.userIds || [],
+        groupIds: sc.groupIds || []
+      }))
+    };
+  }
+
   return {
     config: cfg,
     resolveAsset,
+    introspectKey,
+    getUserProfile,
+    checkKey,
+    normalizeApiKey,
+    explainError,
     downloadAsset,
     uploadAsset,
     pollOperation,

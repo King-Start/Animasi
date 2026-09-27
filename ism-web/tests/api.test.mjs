@@ -41,7 +41,8 @@ const seen = {
   oauthAuthorize: null, // query params
   tokenExchange: null,  // body params
   failures: {},         // penghitung untuk skenario gagal
-  cdnRequests: []       // URL persis yang diminta ke CDN
+  cdnRequests: [],      // URL persis yang diminta ke CDN
+  introspect: []        // kunci yang dikirim ke endpoint introspect
 };
 
 /** Byte "aset" palsu tapi deterministik: mirip header biner rbxm. */
@@ -185,6 +186,56 @@ const mockServer = http.createServer(async (req, res) => {
     return send(200, { done: true, response: { assetId: newId, assetType: "Animation" } });
   }
 
+  /* --- Open Cloud: introspect API key (untuk fitur cek kunci) --- */
+  if (url.pathname === "/api-keys/v1/introspect" && req.method === "POST") {
+    const key = req.headers["x-api-key"] || "";
+    seen.introspect.push(key);
+    const ok = (body) => send(200, body);
+    if (!key || key.length < 30) return send(400, { code: 3, message: "API Key is not provided in a valid format.", details: [] });
+    if (key.startsWith("kunci-lengkap")) {
+      return ok({
+        name: "ISM_TEST_KEY", enabled: true, expired: false,
+        expirationTimeUtc: "2027-01-01T00:00:00Z", authorizedUserId: "1234567",
+        scopes: [{ name: "asset", operations: ["read", "write"], userIds: ["*"], groupIds: ["33445566"] }]
+      });
+    }
+    if (key.startsWith("kunci-tanpa-assets")) {
+      return ok({
+        name: "ONLY_DATASTORE", enabled: true, expired: false, authorizedUserId: "1234567",
+        scopes: [{ name: "universe-datastores", operations: ["read"], universeDatastores: [] }]
+      });
+    }
+    if (key.startsWith("kunci-readonly")) {
+      return ok({
+        name: "READ_ONLY", enabled: true, expired: false, authorizedUserId: "1234567",
+        scopes: [{ name: "asset", operations: ["read"], userIds: ["*"], groupIds: [] }]
+      });
+    }
+    if (key.startsWith("kunci-kadaluwarsa")) {
+      return ok({
+        name: "OLD_KEY", enabled: true, expired: true, expirationTimeUtc: "2025-01-01T00:00:00Z",
+        authorizedUserId: "1234567",
+        scopes: [{ name: "asset", operations: ["read", "write"], userIds: ["*"], groupIds: [] }]
+      });
+    }
+    if (key.startsWith("kunci-akun-lain")) {
+      return ok({
+        name: "OTHER_USER", enabled: true, expired: false, authorizedUserId: "7654321",
+        scopes: [{ name: "asset", operations: ["read", "write"], userIds: ["*"], groupIds: [] }]
+      });
+    }
+    return send(401, { code: 16, message: "API Key not found" });
+  }
+
+  /* --- users (publik) --- */
+  m = url.pathname.match(/^\/v1\/users\/(\d+)$/);
+  if (m) {
+    const id = m[1];
+    if (id === "1234567") return send(200, { id: 1234567, name: "TesterISM", displayName: "Tester ISM" });
+    if (id === "7654321") return send(200, { id: 7654321, name: "AkunLain", displayName: "Akun Lain" });
+    return send(404, { errors: [{ code: 3, message: "user not found" }] });
+  }
+
   /* --- OAuth 2.0 --- */
   if (url.pathname === "/oauth/v1/token" && req.method === "POST") {
     const p = new URLSearchParams(raw.toString());
@@ -219,6 +270,7 @@ const child = spawn(process.execPath, [SERVER], {
     ROBLOX_APIS_BASE: MOCK,
     ROBLOX_ASSET_DELIVERY_BASE: MOCK,
     ROBLOX_OAUTH_BASE: MOCK + "/oauth/v1",
+    ROBLOX_USERS_BASE: MOCK,
     ROBLOX_OAUTH_CLIENT_ID: "client-uji",
     ROBLOX_OAUTH_CLIENT_SECRET: "secret-uji",
     ALLOW_ASSET_HOSTS: "127.0.0.1",
@@ -353,6 +405,95 @@ heading("2b. Uji ambil tanpa kredensial (/api/probe)");
   ok("input tanpa ID → 400", empty.status === 400, JSON.stringify(empty.body));
 }
 
+heading("2c. Diagnosa kunci API (/api/check-key)");
+{
+  const K = "kunci-lengkap-valid-panjang-sekali-1234567890";
+
+  const good = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: K, userId: "1234567" })
+  });
+  ok("kunci valid + target cocok → ok", good.body.ok === true, JSON.stringify(good.body.findings));
+  ok("temuan pertama menyatakan siap dipakai", /siap dipakai/i.test(good.body.findings[0].message));
+  ok("nama akun pemilik kunci ikut ditampilkan", good.body.profile && good.body.profile.name === "TesterISM", JSON.stringify(good.body.profile));
+  ok("scope dilaporkan apa adanya", JSON.stringify(good.body.scopes) === JSON.stringify([{ name: "asset", operations: ["read", "write"], userIds: ["*"], groupIds: ["33445566"] }]), JSON.stringify(good.body.scopes));
+
+  const short = await callJson("/api/check-key", { method: "POST", body: JSON.stringify({ apiKey: "abc123" }) });
+  ok("kunci pendek → ditolak dengan penjelasan format", short.body.ok === false && /valid format|kepotong|tidak lengkap/i.test(short.body.findings.map((f) => f.message).join(" ")), JSON.stringify(short.body.findings));
+
+  const spaced = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: "  \"" + K + "\"  ", userId: "1234567" })
+  });
+  ok("spasi & kutip di ujung kunci dibersihkan otomatis", spaced.body.ok === true, JSON.stringify(spaced.body.findings));
+  ok("kunci yang dinormalisasi memang yang dikirim ke Roblox",
+    seen.introspect.includes(K), "terkirim: " + JSON.stringify(seen.introspect.map((k) => k.slice(0, 14))));
+
+  const unknown = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: "kunci-tidak-dikenal-sama-sekali-1234567890", userId: "1234567" })
+  });
+  ok("kunci tidak dikenal → dijelaskan (ditolak/cabut/IP)", unknown.body.ok === false && /ditolak|dicabut|IP/i.test(unknown.body.findings.map((f) => f.message).join(" ")), JSON.stringify(unknown.body.findings));
+
+  const noAssets = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: "kunci-tanpa-assets-panjang-sekali-1234567890", userId: "1234567" })
+  });
+  ok("kunci tanpa API Assets → diberi tahu cara menambahkannya",
+    noAssets.body.ok === false && /belum diberi API .?Assets/i.test(noAssets.body.findings.map((f) => f.message).join(" ")), JSON.stringify(noAssets.body.findings));
+
+  const readOnly = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: "kunci-readonly-panjang-sekali-1234567890", userId: "1234567" })
+  });
+  ok("kunci hanya Read → diberi tahu Write belum dicentang",
+    readOnly.body.ok === false && /Write belum dicentang/i.test(readOnly.body.findings.map((f) => f.message).join(" ")), JSON.stringify(readOnly.body.findings));
+
+  const expired = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: "kunci-kadaluwarsa-panjang-sekali-1234567890", userId: "1234567" })
+  });
+  ok("kunci kedaluwarsa terdeteksi", expired.body.ok === false && /kedaluwarsa/i.test(expired.body.findings.map((f) => f.message).join(" ")), JSON.stringify(expired.body.findings));
+
+  const mismatch = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: "kunci-akun-lain-panjang-sekali-1234567890", userId: "1234567" })
+  });
+  const mismatchText = mismatch.body.findings.map((f) => f.message).join(" ");
+  ok("User ID tidak cocok dengan pemilik kunci → ditolak", mismatch.body.ok === false && /bukan pemilik kunci/i.test(mismatchText), mismatchText);
+  ok("disarankan User ID yang benar + nama akunnya", /7654321/.test(mismatchText) && /AkunLain/.test(mismatchText), mismatchText);
+
+  const groupBad = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: K, groupId: "99999999" })
+  });
+  ok("Group ID yang tidak diizinkan → ditolak dengan daftar grup yang boleh",
+    groupBad.body.ok === false && /tidak punya akses ke grup 99999999/.test(groupBad.body.findings.map((f) => f.message).join(" ")), JSON.stringify(groupBad.body.findings));
+
+  const groupGood = await callJson("/api/check-key", {
+    method: "POST", body: JSON.stringify({ apiKey: K, groupId: "33445566" })
+  });
+  ok("Group ID yang memang diizinkan → ok", groupGood.body.ok === true, JSON.stringify(groupGood.body.findings));
+
+  ok("kunci tidak pernah bocor ke log server", !serverLog.includes(K), "ketemu di log");
+  ok("kunci tidak dikembalikan di respons", !JSON.stringify(good.body).includes(K));
+}
+
+heading("2d. Penerjemah pesan error (explainError)");
+{
+  const { createRobloxClient } = await import(path.join(__dirname, "..", "lib", "roblox.mjs"));
+  const c = createRobloxClient();
+  const cases = [
+    ["Invalid API Key", /copy ulang|dicabut/i],
+    ["API Key is not provided in a valid format.", /format kunci/i],
+    ["Authentication required to access Asset.", /Dari file lokal/i],
+    ["Request asset was not found", /tidak ditemukan/i],
+    ["The API key does not have permission to perform this action", /Read DAN Write/i],
+    ["Your API key is restricted to certain IP addresses", /dibatasi IP/i],
+    ["This API key has expired", /kedaluwarsa/i],
+    ["Asset is under moderation review", /moderasi/i],
+    ["Too many requests", /batas\/kuota/i]
+  ];
+  for (const [msg, expect] of cases) {
+    const hint = c.explainError(msg);
+    ok(`"${msg.slice(0, 42)}" → saran yang tepat`, Boolean(hint) && expect.test(hint), String(hint));
+  }
+  ok("pesan tak dikenal → null (tidak menebak)", c.explainError("sesuatu yang aneh") === null);
+  ok("normalizeApiKey membuang spasi/newline/kutip", c.normalizeApiKey('  "abc\ndef"  ') === "abcdef");
+}
+
 heading("3. Jalur utama: ID → ID baru (API key)");
 {
   const r = await callJson("/api/jobs", {
@@ -427,6 +568,7 @@ heading("4. Error handling: 404, 401, 429 (retry), tipe salah");
   }
   ok("job berstatus failed (tidak ada yang berhasil)", snap.status === "failed", snap.status);
   ok("pesan error 404 dari Roblox diteruskan", /not found/i.test(snap.items[0].error || ""), snap.items[0].error);
+  ok("item gagal membawa petunjuk perbaikan (hint)", Boolean(snap.items[0].hint) && /tidak ditemukan/i.test(snap.items[0].hint), String(snap.items[0].hint));
 
   /* audio butuh auth → pesan jelas untuk pengguna */
   const r2 = await callJson("/api/jobs", {
@@ -441,6 +583,8 @@ heading("4. Error handling: 404, 401, 429 (retry), tipe salah");
     if (!["queued", "running"].includes(snap2.status)) break;
   }
   ok("aset yang butuh auth → error informatif", /Authentication required/i.test(snap2.items[0].error || ""), snap2.items[0].error);
+  ok("aset yang butuh auth → disarankan pakai file lokal",
+    /Dari file lokal/i.test(snap2.items[0].hint || ""), String(snap2.items[0].hint));
 
   /* 429 lalu berhasil karena retry */
   const r3 = await callJson("/api/jobs", {

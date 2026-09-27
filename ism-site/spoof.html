@@ -103,6 +103,14 @@
   .foot{border-top:1px solid var(--line);padding:22px 0 40px;color:var(--mut-2);font-size:12.8px}
   .foot a{color:var(--mut)}
   .hide{display:none!important}
+  .finding{display:flex;gap:8px;align-items:flex-start;margin-top:7px;font-size:13px;line-height:1.55}
+  .finding .mk{flex:none;font-weight:700}
+  .finding.err .mk{color:var(--red)}
+  .finding.warn .mk{color:var(--amber)}
+  .finding.ok .mk{color:var(--green)}
+  .finding.info .mk{color:var(--cyan)}
+  .keymeta{margin-top:10px;font:11.8px/1.7 var(--mono);color:var(--mut-2);word-break:break-word}
+  .errhint{font-size:11.6px;color:#fde68a;white-space:normal;max-width:340px;display:block}
   @media(max-width:1000px){.cols{grid-template-columns:1fr}}
 </style>
 </head>
@@ -235,8 +243,10 @@ https://www.roblox.com/library/1234567893/apa-pun
         <label class="f" for="apiKey">Open Cloud API key</label>
         <input id="apiKey" type="password" autocomplete="off" placeholder="kunci API kamu">
         <div class="row">
+          <button class="btn sm" id="checkKeyBtn" type="button">Cek kunci dulu</button>
           <label class="chk"><input type="checkbox" id="rememberKey"> ingat selama server hidup (di memori saja)</label>
         </div>
+        <div class="notice hide" id="keyCheck"></div>
         <p class="hint">
           Buat di <b>create.roblox.com → Credentials → API Keys</b> → tambahkan API <b>Assets</b> dengan operasi
           <span class="mono">Read</span> + <span class="mono">Write</span>, dan set <span class="mono">creator</span> ke User ID atau Group ID di atas.
@@ -432,7 +442,12 @@ https://www.roblox.com/library/1234567893/apa-pun
     if (!state.items.length) { rows.innerHTML = '<tr><td colspan="5" style="color:var(--mut-2);padding:16px">Belum ada job.</td></tr>'; return; }
     rows.innerHTML = state.items.map(function (it) {
       var badge = '<span class="st ' + it.status + '">' + (STATUS_LABEL[it.status] || it.status) + "</span>";
-      var nid = it.newId ? '<a href="https://www.roblox.com/library/' + it.newId + '" target="_blank" rel="noopener">' + it.newId + "</a>" : (it.error ? '<span title="' + esc(it.error) + '" style="color:#fecaca;cursor:help">' + esc(it.error.slice(0, 40)) + (it.error.length > 40 ? "…" : "") + "</span>" : "—");
+      var nid = it.newId
+        ? '<a href="https://www.roblox.com/library/' + it.newId + '" target="_blank" rel="noopener">' + it.newId + "</a>"
+        : (it.error
+          ? '<span title="' + esc(it.error) + '" style="color:#fecaca;cursor:help">' + esc(it.error.slice(0, 44)) + (it.error.length > 44 ? "\u2026" : "") + "</span>" +
+            (it.hint ? '<span class="errhint">\u21b3 ' + esc(it.hint) + "</span>" : "")
+          : "\u2014");
       return "<tr><td>" + it.id + "</td><td>" + badge + "</td><td>" + nid + "</td><td>" +
         (it.bytesLength ? (it.bytesLength / 1024).toFixed(1) + " KB" : "—") + "</td><td>" + (it.ms ? it.ms : "—") + "</td></tr>";
     }).join("");
@@ -527,10 +542,13 @@ https://www.roblox.com/library/1234567893/apa-pun
       if (d.type === "item") {
         var it = state.items.filter(function (x) { return x.id === d.id; })[0];
         if (!it) { it = { id: d.id }; state.items.push(it); }
-        ["status", "newId", "error", "bytesLength", "sha256", "assetType", "ms"].forEach(function (k) { if (d[k] != null) it[k] = d[k]; });
+        ["status", "newId", "error", "hint", "bytesLength", "sha256", "assetType", "ms"].forEach(function (k) { if (d[k] != null) it[k] = d[k]; });
         renderTable();
         if (d.status === "done") logLine("ID " + d.id + " → " + d.newId + (d.sha256 ? "  (sha256 " + d.sha256.slice(0, 10) + "…)" : ""), "ok");
-        if (d.status === "error") logLine("ID " + d.id + " gagal: " + d.error, "err");
+        if (d.status === "error") {
+          logLine("ID " + d.id + " gagal: " + d.error, "err");
+          if (d.hint) logLine("   sebab: " + d.hint, "warn");
+        }
         if (d.status === "fetching") logLine("ID " + d.id + " · mengambil isi aset…");
         return;
       }
@@ -718,6 +736,63 @@ https://www.roblox.com/library/1234567893/apa-pun
     $("#fileInfo").innerHTML = '<span class="mono" style="font-size:12.5px">' + esc(f.name) + " · " + (f.size / 1024).toFixed(1) + " KB</span>";
     refreshRun();
   }
+
+  /* ---- cek kunci: diagnosa tanpa upload ---- */
+  function renderFindings(box, res) {
+    var marks = { error: "\u2717", warn: "!", ok: "\u2713", info: "i" };
+    var html = res.findings.map(function (f) {
+      return '<div class="finding ' + (f.level === "error" ? "err" : f.level) + '">' +
+        '<span class="mk">' + (marks[f.level] || "-") + '</span><span>' + esc(f.message) + "</span></div>";
+    }).join("");
+    if (res.profile || res.key) {
+      var bits = [];
+      if (res.profile) bits.push("akun pemilik kunci: @" + (res.profile.name || "?") + " (User ID " + res.profile.id + ")");
+      if (res.profile && res.profile.displayName) bits.push("nama: " + res.profile.displayName);
+      if (res.key && res.key.expiresAt) bits.push("kedaluwarsa: " + res.key.expiresAt);
+      if (res.scopes && res.scopes.length) {
+        bits.push("scope: " + res.scopes.map(function (s) { return s.name + "[" + (s.operations || []).join("+") + "]"; }).join(", "));
+      }
+      if (res.usingServerKey) bits.push("memakai kunci dari server (env ROBLOX_API_KEY)");
+      if (bits.length) html += '<div class="keymeta">' + esc(bits.join(" · ")) + "</div>";
+    }
+    box.className = "notice " + (res.ok ? "ok" : "err");
+    box.innerHTML = html;
+  }
+
+  $("#checkKeyBtn").addEventListener("click", function () {
+    var key = $("#apiKey").value.trim();
+    var box = $("#keyCheck");
+    if (!key && !(state.health && state.health.authModes.serverKey)) {
+      box.className = "notice warn";
+      box.textContent = "Isi kunci API dulu (atau jalankan server dengan ROBLOX_API_KEY supaya user tidak perlu mengisi).";
+      return;
+    }
+    $("#checkKeyBtn").disabled = true;
+    box.className = "notice";
+    box.textContent = "memeriksa kunci ke Roblox…";
+    api("/api/check-key", {
+      method: "POST",
+      body: JSON.stringify({ apiKey: key, userId: $("#userId").value.trim(), groupId: $("#groupId").value.trim() })
+    }).then(function (r) {
+      $("#checkKeyBtn").disabled = false;
+      if (!r.ok) {
+        box.className = "notice err";
+        box.textContent = "Gagal memeriksa: " + (r.body && r.body.message ? r.body.message : "HTTP " + r.status);
+        return;
+      }
+      renderFindings(box, r.body);
+      if (r.body.ok) logLine("cek kunci: valid dan siap dipakai", "ok");
+      else {
+        logLine("cek kunci: ada " + r.body.findings.filter(function (f) { return f.level === "error"; }).length + " masalah yang harus dibetulkan", "warn");
+        r.body.findings.filter(function (f) { return f.level === "error"; }).forEach(function (f) { logLine(f.message, "err"); });
+      }
+      refreshRun();
+    }, function () {
+      $("#checkKeyBtn").disabled = false;
+      box.className = "notice err";
+      box.textContent = "Tidak bisa menghubungi server.";
+    });
+  });
 
   /* login / logout / gate */
   $("#loginBtn").addEventListener("click", function () { location.href = API + "/api/oauth/start"; });
