@@ -487,6 +487,22 @@ heading("2c. Diagnosa kunci API (/api/check-key)");
   ok("Group ID yang memang diizinkan → ok", groupGood.body.ok === true, JSON.stringify(groupGood.body.findings));
 
   ok("kunci tidak pernah bocor ke log server", !serverLog.includes(K), "ketemu di log");
+  {
+    const { classifyCredential, explainError } = await import(path.join(__dirname, "..", "lib", "roblox.mjs"));
+    ok("classifyCredential: kunci API biasa", classifyCredential("Ojj2UBWUC0S+qn3F3aavirWfezWS7ti9CeuFuceh3eHf9Au8").kind === "apikey");
+    ok("classifyCredential: cookie dengan penanda", classifyCredential("_|WARNING:-DO-NOT-SHARE-THIS.|_xyz").kind === "cookie");
+    ok("classifyCredential: cookie polos dengan |_", classifyCredential("abc|_def").kind === "cookie");
+    ok("classifyCredential: JWT", classifyCredential("eyJh.eyJi.c2ln").kind === "jwt");
+    ok("classifyCredential: base64 panjang", classifyCredential("B".repeat(300)).kind === "opaque-long");
+    ok("classifyCredential: kosong", classifyCredential("   ").kind === "empty");
+    ok("classifyCredential tidak mengembalikan nilai kredensial",
+      !JSON.stringify(classifyCredential("B".repeat(300))).includes("BBB"), "kredensial ikut ter-echo");
+    const hint = String(explainError("User is not authorized to access Asset."));
+    ok("explainError: aset terkunci menyebut Place ID dan file lokal", /Place ID/.test(hint) && /file lokal/i.test(hint), hint);
+    ok("explainError: 'Authentication required to access Asset.' juga dapat petunjuk yang sama",
+      /file lokal/i.test(String(explainError("Authentication required to access Asset."))));
+  }
+
   ok("kunci tidak dikembalikan di respons", !JSON.stringify(good.body).includes(K));
 }
 
@@ -565,6 +581,69 @@ heading("2e. Uji fungsi kunci + lapisan bentuk kunci");
   ok("respons tidak memuat kunci mentah",
     JSON.stringify(long.body).indexOf("A".repeat(50)) < 0 && JSON.stringify(long.body).indexOf("kunci-lengkap") < 0,
     "panjang respons " + JSON.stringify(long.body).length);
+}
+
+  heading("2f. Kredensial sesi/cookie ditolak, bukan diteruskan");
+{
+  const COOKIE =
+    "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_ABC123DEF456";
+
+  seen.probe.length = 0;
+  seen.introspect.length = 0;
+  const cookie = await callJson("/api/check-key", { method: "POST", body: JSON.stringify({ apiKey: COOKIE, userId: "1234567" }) });
+  ok("cookie sesi → ditolak di pintu (verdict 'cookie')", cookie.body.verdict === "cookie" && cookie.body.ok === false, JSON.stringify(cookie.body.verdict));
+  ok("cookie sesi TIDAK pernah dikirim ke Roblox",
+    seen.probe.length === 0 && seen.introspect.length === 0,
+    `probe=${seen.probe.length} introspect=${seen.introspect.length}`);
+  ok("cookie sesi TIDAK masuk log server",
+    !serverLog.includes("DO-NOT-SHARE") && !serverLog.includes(COOKIE.slice(0, 40)), "bocor ke log");
+  ok("cookie sesi tidak dikembalikan di respons", !JSON.stringify(cookie.body).includes("DO-NOT-SHARE"));
+  ok("disarankan logout semua perangkat",
+    /Log out dari Roblox di semua perangkat/i.test(cookie.body.findings.map((f) => f.message).join(" ")),
+    JSON.stringify(cookie.body.findings.map((f) => f.message)));
+  ok("jenis kredensial dilaporkan ke UI", cookie.body.credential && cookie.body.credential.kind === "cookie", JSON.stringify(cookie.body.credential));
+  ok("log server menyebut ada percobaan cookie", /berbentuk cookie sesi/.test(serverLog), serverLog.slice(-200));
+
+  // jalur upload juga harus menolak, bukan meneruskan
+  const uploadsBefore = seen.uploads.length;
+  const cookieJob = await callJson("/api/jobs", {
+    method: "POST",
+    body: JSON.stringify({ input: "180435571", apiKey: COOKIE, options: { userId: "1234567" } })
+  });
+  if (cookieJob.status === 202) {
+    let snap = null;
+    for (let i = 0; i < 40; i++) {
+      await wait(200);
+      const st = await callJson("/api/jobs/" + cookieJob.body.jobId);
+      snap = st.body;
+      if (["finished", "finished-with-errors", "failed", "cancelled"].includes(snap.status)) break;
+    }
+    ok("job dengan cookie sesi tidak pernah meng-upload apa pun", seen.uploads.length === uploadsBefore, JSON.stringify({ uploads: seen.uploads.length - uploadsBefore }));
+    ok("item gagal dengan pesan cookie, bukan 500",
+      snap.items.every((i) => i.status !== "done" && /cookie/i.test(String(i.error || "") + String(i.hint || ""))),
+      JSON.stringify(snap.items.map((i) => [i.status, i.error])));
+  } else {
+    ok("job dengan cookie sesi ditolak di awal", cookieJob.status >= 400 && cookieJob.status < 500, String(cookieJob.status));
+    ok("penolakan menyebut cookie", /cookie/i.test(JSON.stringify(cookieJob.body)), JSON.stringify(cookieJob.body).slice(0, 160));
+    ok("tidak ada upload yang terjadi", seen.uploads.length === uploadsBefore);
+  }
+
+  // kredensial panjang (seperti 964 karakter) → diberi tahu apa adanya
+  const longCred = "A".repeat(964);
+  const longRes = await callJson("/api/check-key", { method: "POST", body: JSON.stringify({ apiKey: longCred, userId: "1234567" }) });
+  ok("kredensial 964 karakter → jenis 'opaque-long'", longRes.body.credential && longRes.body.credential.kind === "opaque-long", JSON.stringify(longRes.body.credential));
+  ok("user diberi tahu panjangnya tidak wajar",
+    /964 karakter/.test(longRes.body.findings.map((f) => f.message).join(" ")) &&
+      /sekitar 48 karakter/.test(longRes.body.findings.map((f) => f.message).join(" ")),
+    JSON.stringify(longRes.body.findings.map((f) => f.message)));
+
+  // JWT (token OAuth) → boleh diuji, tapi diberi catatan
+  const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3In0.abcdefghijklmnopqrstuvwxyz";
+  const jwtRes = await callJson("/api/check-key", { method: "POST", body: JSON.stringify({ apiKey: jwt, userId: "1234567" }) });
+  ok("JWT dikenali sebagai token OAuth", jwtRes.body.credential && jwtRes.body.credential.kind === "jwt", JSON.stringify(jwtRes.body.credential));
+  ok("diberi catatan bahwa upload biasanya ditolak dengan token OAuth",
+    /token OAuth/i.test(jwtRes.body.findings.map((f) => f.message).join(" ")),
+    JSON.stringify(jwtRes.body.findings.map((f) => f.message)));
 }
 
 heading("2d. Penerjemah pesan error (explainError)");

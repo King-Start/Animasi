@@ -120,6 +120,9 @@
   .keyshape{margin-top:6px;font:11.8px/1.6 var(--mono);color:var(--mut-2);word-break:break-all}
   .keyshape .ok{color:var(--green)} .keyshape .bad{color:var(--red)} .keyshape .warn{color:var(--amber)}
   .errhint{font-size:11.6px;color:#fde68a;white-space:normal;max-width:340px;display:block}
+  .errhint .inline{display:inline-block;margin-top:4px;padding:2px 8px;font:600 11px/1.6 var(--mono);border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;cursor:pointer}
+  .cred{margin-top:8px;font:11.8px/1.6 var(--mono);color:var(--mut-2)}
+  .cred.bad{color:#ffb3b3}
   @media(max-width:1000px){.cols{grid-template-columns:1fr}}
 </style>
 </head>
@@ -336,7 +339,8 @@ https://www.roblox.com/library/1234567893/apa-pun
         1 · <b>Fetch tanpa login:</b> animasi bisa diambil dari ID-nya tanpa kredensial apa pun — itu sebabnya alur ini masuk akal di web.<br>
         2 · <b>Upload butuh punyamu:</b> API key/OAuth menentukan siapa pemilik ID barunya. Pastikan <span class="mono">creator</span> di API key sama dengan target di atas.<br>
         3 · <b>Kuota &amp; hak:</b> hanya proses aset yang kamu berhak. Re-upload karya orang lain tanpa izin bukan cuma melanggar aturan Roblox, tapi juga hak cipta mereka.<br>
-        4 · <b>Verifikasi:</b> kolom ukuran + hash SHA-256 bisa kamu pakai memastikan byte yang di-upload identik dengan yang diambil (tidak ada re-encode).
+        4 · <b>Aset terkunci:</b> sebagian animasi dibatasi ("User is not authorized to access Asset") \u2014 kunci API tidak bisa mengambil aset milik kreator lain. Kalau kamu punya Place ID game tempat animasi itu dipakai, isi kolom Place ID; kalau tidak, unduh file <span class="mono">.rbxm</span>-nya lewat ekstensi/ALECTRA di browser-mu, lalu pakai tab <b>Dari file lokal</b>.<br>
+        5 · <b>Verifikasi:</b> kolom ukuran + hash SHA-256 bisa kamu pakai memastikan byte yang di-upload identik dengan yang diambil (tidak ada re-encode).
       </p>
     </div>
   </div>
@@ -460,7 +464,11 @@ https://www.roblox.com/library/1234567893/apa-pun
         ? '<a href="https://www.roblox.com/library/' + it.newId + '" target="_blank" rel="noopener">' + it.newId + "</a>"
         : (it.error
           ? '<span title="' + esc(it.error) + '" style="color:#fecaca;cursor:help">' + esc(it.error.slice(0, 44)) + (it.error.length > 44 ? "\u2026" : "") + "</span>" +
-            (it.hint ? '<span class="errhint">\u21b3 ' + esc(it.hint) + "</span>" : "")
+            (it.hint
+              ? '<span class="errhint">\u21b3 ' + esc(it.hint) +
+                (/file lokal/i.test(it.hint) ? ' <button type="button" class="inline" data-goto-file="1">buka tab Dari file lokal</button>' : "") +
+                "</span>"
+              : "")
           : "\u2014");
       return "<tr><td>" + it.id + "</td><td>" + badge + "</td><td>" + nid + "</td><td>" +
         (it.bytesLength ? (it.bytesLength / 1024).toFixed(1) + " KB" : "—") + "</td><td>" + (it.ms ? it.ms : "—") + "</td></tr>";
@@ -751,6 +759,16 @@ https://www.roblox.com/library/1234567893/apa-pun
     refreshRun();
   }
 
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute("data-goto-file")) {
+      setTab("file");
+      var drop = $("#drop");
+      if (drop && drop.scrollIntoView) drop.scrollIntoView({ block: "center" });
+      logLine("pindah ke tab 'Dari file lokal' \u2014 unduh file .rbxm-nya dulu (ekstensi/ALECTRA), lalu tarik ke kotak itu", "info");
+    }
+  });
+
   /* ---- cek kunci: diagnosa tanpa upload ---- */
   function renderFindings(box, res) {
     var marks = { error: "\u2717", warn: "!", ok: "\u2713", info: "i" };
@@ -760,7 +778,8 @@ https://www.roblox.com/library/1234567893/apa-pun
       reject: ["err", "\u2717 KUNCI DITOLAK ROBLOX"],
       offline: ["err", "\u2717 SERVER TIDAK BISA MENGHUBUNGI ROBLOX"],
       unknown: ["warn", "! HASIL BELUM JELAS"],
-      empty: ["warn", "! KUNCI MASIH KOSONG"]
+      empty: ["warn", "! KUNCI MASIH KOSONG"],
+      cookie: ["err", "\u2717 INI COOKIE SESI \u2014 DITOLAK DI SINI"]
     };
     if (res.verdict && vmap[res.verdict]) {
       head = '<div class="verdict ' + vmap[res.verdict][0] + '">' + vmap[res.verdict][1] + "</div>";
@@ -769,6 +788,11 @@ https://www.roblox.com/library/1234567893/apa-pun
       return '<div class="finding ' + (f.level === "error" ? "err" : f.level) + '">' +
         '<span class="mk">' + (marks[f.level] || "-") + '</span><span>' + esc(f.message) + "</span></div>";
     }).join("");
+    if (res.credential) {
+      var isBad = res.credential.kind === "cookie" || res.credential.kind === "opaque-long" || res.credential.kind === "unknown";
+      html += '<div class="cred' + (isBad ? " bad" : "") + '">jenis kredensial yang terdeteksi: <b>' +
+        esc(res.credential.label) + "</b></div>";
+    }
     if (res.keyShape) {
       var ks = res.keyShape;
       var sh = ["panjang kunci yang diterima server: <b>" + ks.length + " karakter</b>"];
@@ -831,6 +855,14 @@ https://www.roblox.com/library/1234567893/apa-pun
     if (r.nonAscii) { bits.push('<span class="bad">' + r.nonAscii + " karakter non-ASCII</span>"); bad = true; }
     if (r.odd.length) { bits.push('<span class="bad">karakter aneh: ' + esc(r.odd.join(" ")) + "</span>"); bad = true; }
     if (r.trimmed) { bits.push("ada spasi/kutip di ujung"); }
+    if (r.length > 96 && !bad) {
+      bits.push('<span class="warn">' + r.length + " karakter \u2014 kunci API Open Cloud biasanya ~48 karakter</span>");
+      bad = true;
+    }
+    if (/^_\||\|_|DO-NOT-SHARE/i.test(r.cleaned)) {
+      bits.push('<span class="bad">ini kelihatan seperti cookie sesi \u2014 jangan dipakai di sini</span>');
+      bad = true;
+    }
     if (!bad && !r.hidden) bits.push('<span class="ok">bentuknya wajar</span>');
     box.className = "keyshape";
     box.innerHTML = bits.join(" \u00b7 ");

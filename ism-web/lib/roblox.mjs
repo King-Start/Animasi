@@ -32,6 +32,36 @@ export function firstNonAscii(value) {
   return m ? m[0] : null;
 }
 
+/** Penanda cookie sesi Roblox — dua bentuk yang dipakai Roblox selama ini. */
+const COOKIE_MARKER = /DO-NOT-SHARE|Sharing-this-will-allow/i;
+
+/**
+ * Menebak JENIS kredensial dari bentuknya (bukan dari isinya, dan tidak pernah
+ * mengembalikan nilainya). Dipakai supaya situs ini tidak pernah diam-diam
+ * meneruskan cookie sesi Roblox ke mana pun.
+ */
+export function classifyCredential(raw) {
+  const s = String(raw == null ? "" : raw).trim();
+  if (!s) return { kind: "empty", length: 0, label: "kosong" };
+  const cleaned = normalizeApiKey(s);
+  const length = cleaned.length;
+  if (COOKIE_MARKER.test(s) || /^_\|/.test(s) || /\|_/.test(s)) {
+    return { kind: "cookie", length, label: "cookie sesi Roblox (.ROBLOSECURITY)" };
+  }
+  if (/^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/.test(cleaned)) {
+    return { kind: "jwt", length, label: "token OAuth (JWT)" };
+  }
+  if (/^[A-Za-z0-9+/=_-]+$/.test(cleaned)) {
+    if (length <= 96) return { kind: "apikey", length, label: "kunci API Open Cloud" };
+    return {
+      kind: "opaque-long",
+      length,
+      label: `kredensial ${length} karakter — bukan bentuk kunci API Open Cloud (biasanya ~48)`
+    };
+  }
+  return { kind: "unknown", length, label: "bentuk kredensial tidak dikenal" };
+}
+
 export class RobloxError extends Error {
   constructor(message, info = {}) {
     super(message);
@@ -275,8 +305,8 @@ export function explainError(message) {
       "Tipe aset tidak didukung untuk upload. Animasi: .rbxm/.rbxmx. Audio: .ogg/.mp3/.wav/.flac."],
     [/invalid file|corrupt|malformed|failed to parse/i,
       "File-nya tidak bisa dibaca Roblox. Ekspor ulang dari Roblox Studio sebagai .rbxm atau .rbxmx."],
-    [/authentication required to access asset/i,
-      "Isi aset ini dibatasi Roblox atau kreatornya, jadi tidak bisa diambil tanpa login. Pakai tab 'Dari file lokal': kamu sediakan filenya, server hanya mengurus upload."],
+    [/authentication required to access asset|not authorized to access asset/i,
+      "Aset ini dibatasi: hanya sesi Roblox yang login boleh mengambil isinya, dan kunci API tidak bisa mengambil aset milik kreator lain. Dua jalan: (1) isi Place ID game tempat animasi ini dipakai, lalu jalankan ulang; (2) unduh file .rbxm-nya lewat ekstensi/ALECTRA di browser-mu, lalu pakai tab 'Dari file lokal'."],
     [/was not found|not found/i,
       "Asset ID tidak ditemukan: ID-nya salah, sudah dihapus, atau bukan aset publik."],
     [/wrong-type/i,
@@ -301,6 +331,14 @@ export function createRobloxClient(config = {}) {
     if (auth.kind === "apikey") {
       if (!auth.apiKey || String(auth.apiKey).length < 8) {
         throw new RobloxError("API key kosong atau terlalu pendek.", { code: 401 });
+      }
+      const credKind = classifyCredential(auth.apiKey);
+      if (credKind.kind === "cookie") {
+        throw new RobloxError(
+          "Nilai di kolom kunci terlihat seperti cookie sesi Roblox. Server ini tidak meneruskan cookie ke mana pun. " +
+            "Buat kunci API Open Cloud di create.roblox.com \u2192 Credentials \u2192 API Keys.",
+          { code: 401 }
+        );
       }
       const bad = firstNonAscii(normalizeApiKey(auth.apiKey));
       if (bad) {
@@ -639,6 +677,61 @@ export function createRobloxClient(config = {}) {
       };
     }
 
+    const cred = classifyCredential(apiKey);
+
+    // Cookie sesi: tolak di pintu. Situs ini tidak pernah meneruskan cookie ke mana pun.
+    if (cred.kind === "cookie") {
+      return {
+        ok: false,
+        verdict: "cookie",
+        credential: cred,
+        findings: [
+          {
+            level: "error",
+            message:
+              "Nilai di kolom kunci terlihat seperti cookie sesi Roblox (.ROBLOSECURITY). Server ini TIDAK meneruskannya ke Roblox \u2014 dan tidak akan pernah."
+          },
+          {
+            level: "error",
+            message:
+              "Hapus nilai itu dari kolom ini. Kalau kamu baru menempelkannya di suatu tempat: tekan Log out dari Roblox di semua perangkat supaya cookie itu batal, lalu ganti password akunmu."
+          },
+          {
+            level: "info",
+            message:
+              "Untuk upload, yang dibutuhkan kunci API Open Cloud: create.roblox.com \u2192 Credentials \u2192 API Keys \u2192 API Assets dengan Read + Write dicentang."
+          }
+        ],
+        probes: [],
+        keyShape: shape.stats,
+        profile: null,
+        key: null,
+        scopes: []
+      };
+    }
+
+    // Bentuk kredensial yang tidak lazim: kasih tahu apa adanya, jangan ditebak-tebak.
+    if (cred.kind === "jwt") {
+      findings.push({
+        level: "warn",
+        message:
+          "Yang ditempel ini token OAuth (JWT), bukan kunci API Open Cloud. Token seperti ini sering bisa membaca, tapi upload biasanya ditolak karena scope-nya berbeda."
+      });
+      findings.push({ level: "info", message: "Cara paling pasti: buat kunci API Open Cloud (sekitar 48 karakter) dengan API Assets, Read + Write." });
+    } else if (cred.kind === "opaque-long") {
+      findings.push({
+        level: "warn",
+        message:
+          `Panjang kredensial ${cred.length} karakter. Kunci API Open Cloud biasanya sekitar 48 karakter, jadi ini kemungkinan token/cookie dari alat lain, bukan kunci API.`
+      });
+      findings.push({
+        level: "info",
+        message: "Kalau kamu tidak yakin itu kunci apa: buat kunci API baru di create.roblox.com \u2192 Credentials \u2192 API Keys (jangan pakai token dari alat lain)."
+      });
+    } else if (cred.kind === "unknown") {
+      findings.push({ level: "warn", message: "Bentuk kredensial ini tidak dikenal \u2014 pastikan itu kunci API Open Cloud dari Creator Dashboard." });
+    }
+
     // (a) bentuk kunci — ini yang biasanya bikin "not provided in a valid format"
     if (shape.stats.hiddenChars > 0) {
       findings.push({
@@ -820,6 +913,7 @@ export function createRobloxClient(config = {}) {
     return {
       ok: verdict === "ok" && !hasError,
       verdict,
+      credential: cred,
       findings,
       probes,
       keyShape: shape.stats,
@@ -850,6 +944,7 @@ export function createRobloxClient(config = {}) {
     getUserProfile,
     checkKey,
     normalizeApiKey,
+    classifyCredential,
     firstNonAscii,
     explainError,
     downloadAsset,

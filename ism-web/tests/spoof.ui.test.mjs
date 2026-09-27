@@ -53,6 +53,7 @@ let meBody = { loggedIn: false };
 let jobSnapshot = null;
 let checkKeyBody = {
   ok: false, usingServerKey: false, verdict: "reject",
+  credential: { kind: "opaque-long", length: 964, label: "kredensial 964 karakter \u2014 bukan bentuk kunci API Open Cloud (biasanya ~48)" },
   probes: [
     { id: "asset-read", label: "baca aset 180435571 (Assets API)", status: 401, ok: false, message: "Invalid API Key" }
   ],
@@ -197,6 +198,16 @@ ok("status sukses tampil di tabel", /selesai/.test($("#rows").textContent));
 ok("ID baru tampil sebagai tautan library", /roblox\.com\/library\/9876543210/.test($("#rows").innerHTML));
 ok("error item tampil di tabel", /Authentication required/.test($("#rows").textContent));
   ok("petunjuk perbaikan ikut tampil di tabel", /Dari file lokal/.test($("#rows").textContent), $("#rows").textContent.slice(0, 200));
+  ok("error terkunci menawarkan tombol langsung ke tab file lokal",
+    /data-goto-file/.test($("#rows").innerHTML), $("#rows").innerHTML.slice(0, 220));
+  click($("#tabId"));
+  await wait(20);
+  click($("#rows").querySelector("[data-goto-file]"));
+  await wait(40);
+  ok("klik tombol itu benar-benar memindah ke tab Dari file lokal",
+    !$("#paneFile").className.includes("hide") && $("#paneId").className.includes("hide"),
+    JSON.stringify({ file: $("#paneFile").className, id: $("#paneId").className }));
+  ok("perpindahan tab dicatat di log", /Dari file lokal/.test($("#log").textContent), $("#log").textContent.slice(-140));
 ok("log mencatat hasil sukses", /9876543210/.test($("#log").textContent), JSON.stringify($("#log").textContent.slice(0, 300)));
 ok("log mencatat kegagalan", /gagal/.test($("#log").textContent));
 
@@ -243,6 +254,9 @@ heading("7b. Tombol 'Cek kunci' (diagnosa)");
   ok("scope kunci ditampilkan", /asset\[read\]/.test(box.textContent), box.textContent);
   ok("temuan error juga masuk ke log", /Write belum dicentang/.test($("#log").textContent));
 
+  ok("jenis kredensial yang terdeteksi ditampilkan",
+    /kredensial 964 karakter/.test($("#keyCheck").textContent) && /cred bad/.test($("#keyCheck").innerHTML),
+    $("#keyCheck").textContent.slice(0, 200));
   ok("putusan ditampilkan paling atas di panel", /KUNCI DITOLAK ROBLOX/.test(box.textContent), box.textContent.slice(0, 80));
   ok("hasil uji nyata ke Roblox ditampilkan sebagai chip",
     /baca aset 180435571/.test(box.textContent) && /HTTP 401/.test(box.textContent) && /Invalid API Key/.test(box.textContent),
@@ -255,6 +269,7 @@ heading("7b. Tombol 'Cek kunci' (diagnosa)");
   // sekarang skenario kunci sehat
   checkKeyBody = {
     ok: true, usingServerKey: true, verdict: "ok",
+    credential: { kind: "apikey", length: 48, label: "kunci API Open Cloud" },
     probes: [
       { id: "asset-read", label: "baca aset 180435571 (Assets API)", status: 200, ok: true, message: "HTTP 200" }
     ],

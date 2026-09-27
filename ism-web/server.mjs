@@ -678,8 +678,13 @@ const server = http.createServer(async (req, res) => {
       // Yang boleh masuk log cuma bentuknya (panjang & karakter aneh) — bukan isinya.
       const ks = result.keyShape || {};
       const probeRingkas = (result.probes || []).map((p) => `${p.id}=${p.status}`).join(" ");
+      const credKind = result.credential ? result.credential.kind : "?";
+      if (credKind === "cookie") {
+        log("check-key: PERINGATAN nilai yang ditempel berbentuk cookie sesi — ditolak, tidak diteruskan ke Roblox.");
+      }
       log(
         `check-key: target=${body.groupId ? "group " + body.groupId : body.userId ? "user " + body.userId : "belum diisi"} ` +
+          `jenis-kredensial=${credKind} ` +
           `→ ${result.verdict || (result.ok ? "ok" : "gagal")} ` +
           `(panjang kunci ${ks.length || 0}, tak-terlihat ${ks.hiddenChars || 0}, aneh ${(ks.odd || []).length}${probeRingkas ? ", uji " + probeRingkas : ""})`
       );
