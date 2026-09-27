@@ -13,6 +13,7 @@
     "dev": "node ism-web/server.mjs",
     "test": "node ism-site/tests/core.test.mjs",
     "test:api": "node ism-web/tests/api.test.mjs",
-    "test:all": "node ism-site/tests/core.test.mjs && node ism-web/tests/api.test.mjs"
+    "test:all": "node ism-site/tests/core.test.mjs && node ism-web/tests/userscript.test.mjs && node ism-web/tests/api.test.mjs",
+    "test:userscript": "node ism-web/tests/userscript.test.mjs"
   }
 }

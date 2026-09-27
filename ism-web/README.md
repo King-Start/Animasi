@@ -120,7 +120,7 @@ curl -s localhost:8787/api/jobs -H 'content-type: application/json' -d '{
 node ism-web/tests/api.test.mjs
 ```
 
-170 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
+173 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
 
 - alur lengkap ID → byte → upload → ID baru, termasuk upload ke grup dan operasi async
 - **bukti byte identik**: SHA-256 byte yang diterima endpoint upload dibandingkan dengan byte dari CDN

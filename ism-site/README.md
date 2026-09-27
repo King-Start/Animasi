@@ -55,7 +55,7 @@ node ../ism-web/tests/spoof.ui.test.mjs     # UI spoof.html (fetch & SSE disimul
 node ../ism-web/tests/api.test.mjs          # end-to-end vs server Roblox tiruan
 ```
 
-Total **384 pengujian**: 69 (core) + 67 (situs) + 78 (UI spoofer) + 170 (API end-to-end).
+Total **426 pengujian**: 69 (core) + 67 (situs) + 80 (UI spoofer) + 173 (API end-to-end) + 37 (userscript).
 
 `tests/core.test.mjs` bekerja dengan cara mengekstrak blok di antara marker
 `/* ===== ISM-CORE-START ===== */` dan `/* ===== ISM-CORE-END ===== */` dari

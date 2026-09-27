@@ -760,6 +760,10 @@ heading("4. Error handling: 404, 401, 429 (retry), tipe salah");
     if (!["queued", "running"].includes(snap2.status)) break;
   }
   ok("aset yang butuh auth → error informatif", /Authentication required/i.test(snap2.items[0].error || ""), snap2.items[0].error);
+  ok("kegagalan di tahap ambil isi diberi label 'fetch'",
+    snap2.items[0].stage === "fetch", JSON.stringify(snap2.items[0].stage));
+  ok("tidak ada hash/ukuran yang tercatat kalau pengambilan gagal",
+    !snap2.items[0].bytesLength && !snap2.items[0].sha256, JSON.stringify(snap2.items[0]));
   ok("aset yang butuh auth → disarankan pakai file lokal",
     /Dari file lokal/i.test(snap2.items[0].hint || ""), String(snap2.items[0].hint));
 
@@ -933,7 +937,17 @@ heading("8. Tidak ada jalur cookie (titik paling penting)");
   ok("cookie akun tidak tercatat di respons job", !JSON.stringify(snap).includes("ini-cookie-akun-palsu"));
 
   const src = await (await fetch(BASE + "/spoof.html")).text();
-  ok("halaman spoofer tidak punya kolom cookie", !/name=["']?cookie/i.test(src) && !/ROBLOSECURITY/.test(src.replace(/<meta[\s\S]*?>/g, "")));
+  // Halaman boleh MENYEBUT aturan cookie (itu penjelasan untuk user), tapi tidak boleh:
+  // punya kolom input cookie, atau menulis/mengirim cookie bernama itu.
+  ok("halaman spoofer tidak punya kolom cookie",
+    !/<input[^>]*name=["']?[^"'>]*cookie/i.test(src) &&
+    !/<input[^>]*id=["']?[^"'>]*cookie/i.test(src) &&
+    !/document\.cookie\s*=[^;]*ROBLOSECURITY/i.test(src),
+    "ada kolom/penulisan cookie di halaman");
+  ok("penyebutan .ROBLOSECURITY di halaman hanya sebagai penjelasan",
+    (src.match(/ROBLOSECURITY/g) || []).length <= 2 &&
+    /tidak menerima, meneruskan, maupun menyimpan cookie/i.test(src),
+    "jumlah penyebutan: " + (src.match(/ROBLOSECURITY/g) || []).length);
   ok("halaman menjelaskan kenapa tanpa cookie", /tidak ada kolom cookie/i.test(src));
   ok("halaman mengarahkan ke Open Cloud API key / OAuth", /Open Cloud API key/.test(src) && /OAuth/.test(src));
 }

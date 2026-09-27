@@ -15,5 +15,7 @@ jobs:
           node-version: "20"
       - name: Test logika inti situs
         run: node ism-site/tests/core.test.mjs
+      - name: Test logika userscript pengambil aset
+        run: node ism-web/tests/userscript.test.mjs
       - name: Test end-to-end Web Spoofer (vs server Roblox tiruan)
         run: node ism-web/tests/api.test.mjs

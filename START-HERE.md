@@ -50,3 +50,53 @@ Untuk publik, taruh di belakang HTTPS (mis. Cloudflare Tunnel atau Caddy), janga
 - API key tidak ditulis ke disk dan tidak masuk log.
 - Hanya proses aset yang kamu punya hak atau izinnya.
 - Audio (Sound) tidak bisa ditarik dari ID → pakai tab "Dari file lokal".
+
+---
+
+## Aset yang dikunci (mis. animasi grup lain)
+
+Server ini **tidak memakai cookie**, jadi server memang tidak bisa mengambil aset yang hanya
+boleh dibuka sesi login. Yang bisa: `ism-site/ism-fetch.user.js`.
+
+1. Pasang Tampermonkey / Violentmonkey di browser atau HP-mu.
+2. Buka halaman aset Roblox-nya, tekan tombol **ISM · ambil aset**.
+3. Pilih **Ambil & unduh** (lanjut tarik file ke tab *Dari file lokal*), atau isi Pengaturan
+   sekali (alamat situs + kunci API + User/Group ID) lalu **Ambil & kirim ke situs** —
+   ID barunya langsung muncul.
+
+Cookie sesimu tidak dibaca script itu dan tidak pernah dikirim ke server mana pun:
+browser-mu sendiri yang melampirkannya ke Roblox, sama seperti halaman Roblox biasa.
+
+### Cara memasang userscript-nya (pilih sesuai perangkat)
+
+File script: `ism-site/ism-fetch.user.js` di paket/ZIP ini, atau unduh dari halaman spoofer
+(tautan **unduh ism-fetch.user.js** di tab *Dari file lokal*), yaitu alamat
+`https://ALAMAT-SITUS-MU/ism-fetch.user.js`.
+
+**Komputer (Chrome / Edge / Brave / Firefox):**
+1. Pasang ekstensi **Tampermonkey** dari toko ekstensi browser-mu, tunggu ikonnya muncul.
+2. Buka `https://ALAMAT-SITUS-MU/ism-fetch.user.js` di tab baru.
+3. Tampermonkey otomatis menampilkan halaman instalasi, tekan **Install**.
+4. Buka halaman aset Roblox-nya, tombol **ISM - ambil aset** muncul di kanan bawah.
+
+**Android:**
+Chrome Android **tidak bisa** memasang ekstensi. Pakai salah satu:
+- **Firefox Android** (paling mudah): menu (titik tiga) -> *Add-ons* -> **Tampermonkey** -> pasang ->
+  buka `https://ALAMAT-SITUS-MU/ism-fetch.user.js` -> **Install**.
+- **Kiwi Browser** (Chromium yang bisa ekstensi): menu -> *Extensions* -> buka Chrome Web Store ->
+  Tampermonkey -> pasang -> buka URL script -> **Install**.
+
+**Kalau tidak bisa membuka URL script** (mis. situs belum ke-deploy): buka dashboard
+Tampermonkey -> tab "+" (script baru) -> hapus isinya -> tempel seluruh isi file
+`ism-fetch.user.js` -> simpan (Ctrl+S).
+
+**Cek sudah terpasang:** buka halaman aset Roblox apa pun; kalau tombol bulat
+**ISM - ambil aset** ada di kanan bawah, script hidup.
+
+### Setelan sekali pakai (untuk tombol "Ambil & kirim ke situs")
+Tekan **Pengaturan** di panel script, isi:
+- **Alamat situs**: `https://ALAMAT-SITUS-MU` (tanpa garis miring di ujung)
+- **Kunci API Open Cloud** (create.roblox.com -> Credentials -> API Keys -> API Assets, Read + Write)
+- **User ID** dan/atau **Group ID** tujuan
+
+Ketiganya disimpan **di browser kamu sendiri** (penyimpanan Tampermonkey), bukan di server mana pun.

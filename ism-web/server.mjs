@@ -202,7 +202,7 @@ function snapshot(job) {
     createdAt: job.createdAt,
     summary: job.summary,
     items: job.items.map((it) => ({
-      id: it.id, status: it.status, newId: it.newId || null, error: it.error || null, hint: it.hint || null,
+      id: it.id, status: it.status, stage: it.stage || null, newId: it.newId || null, error: it.error || null, hint: it.hint || null,
       bytesLength: it.bytesLength || null, sha256: it.sha256 || null,
       assetType: it.assetType || null, ms: it.ms || null, name: it.name || null,
       creatorId: it.creatorId || null, creatorType: it.creatorType || null
@@ -226,6 +226,7 @@ async function processItem(job, item) {
       if (job.cancelled) { item.status = "skipped"; item.error = "dibatalkan"; return; }
 
       if (item.source === "file") {
+        item.stage = "upload";
         item.status = "uploading";
         emit(job, { type: "item", id: item.id, status: item.status, attempt });
         const up = await roblox.uploadAsset({
@@ -239,6 +240,9 @@ async function processItem(job, item) {
         item.newId = done.assetId;
         item.assetType = item.assetType || "Animation";
       } else {
+        // Tahap dilacak supaya jelas di mana gagalnya: "fetch" (ambil isi dari Roblox,
+        // TIDAK memakai kunci API) atau "upload" (baru di sini kunci dipakai).
+        item.stage = "fetch";
         item.status = "fetching";
         emit(job, { type: "item", id: item.id, status: item.status, attempt });
 
@@ -249,6 +253,7 @@ async function processItem(job, item) {
 
         if (job.cancelled) { item.status = "skipped"; item.error = "dibatalkan"; return; }
 
+        item.stage = "upload";
         item.status = "uploading";
         emit(job, {
           type: "item", id: item.id, status: item.status,
@@ -286,12 +291,13 @@ async function processItem(job, item) {
         continue;
       }
       item.status = "error";
+      item.stage = item.stage || "unknown";
       item.error = re.message;
       item.hint = roblox.explainError(re.message) || null;
       item.ms = now() - t0;
       job.summary.error++;
       job.summary.pending--;
-      emit(job, { type: "item", id: item.id, status: "error", error: item.error, hint: item.hint, ms: item.ms });
+      emit(job, { type: "item", id: item.id, status: "error", error: item.error, hint: item.hint, stage: item.stage, ms: item.ms });
       return;
     }
   }
@@ -373,6 +379,9 @@ function oauthRedirectUri(req) {
 const MIME = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
   ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+  // userscript & contoh file: dikirim apa adanya, tidak dieksekusi server
+  ".user.js": "text/javascript; charset=utf-8", ".rbxm": "application/octet-stream",
+  ".rbxmx": "application/xml; charset=utf-8",
   ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml",
   ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".ico": "image/x-icon",
   ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8", ".xml": "application/xml"

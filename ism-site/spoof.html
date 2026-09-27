@@ -208,9 +208,17 @@ https://www.roblox.com/library/1234567893/apa-pun
         </div>
         <div class="row" id="fileInfo"></div>
         <p class="hint">
-          Mode ini berguna untuk tipe aset yang isinya tidak bisa diambil tanpa login (mis. <b>Sound</b>) — kamu sediakan
-          filenya, server hanya mengurus upload-nya.
+          Mode ini berguna untuk aset yang isinya tidak bisa diambil tanpa login (animasi terkunci, <b>Sound</b>, dll) —
+          kamu sediakan filenya, server hanya mengurus upload-nya.
         </p>
+        <div class="notice" style="margin-top:10px">
+          <b>Malas tarik file manual?</b> Pakai userscript <span class="mono">ism-fetch.user.js</span> yang ikut di paket ini:
+          <a href="/ism-fetch.user.js" download>unduh ism-fetch.user.js</a>. Pasang di Tampermonkey/Violentmonkey,
+          buka halaman aset Roblox-nya, lalu tekan <b>ISM · ambil aset</b>.
+          Userscript itu mengambil isinya <b>di sesimu sendiri</b> (persis seperti ekstensi), lalu file-nya bisa langsung
+          dikirim ke halaman ini untuk di-upload dengan kunci API-mu.
+          <br><span class="mono">Cookie sesimu tidak pernah dibaca maupun dikirim oleh script itu — browser yang melampirkannya ke Roblox.</span>
+        </div>
       </section>
 
       <div class="step" style="margin-top:20px"><span class="n">2</span><h2>Tujuan upload</h2></div>
@@ -264,7 +272,7 @@ https://www.roblox.com/library/1234567893/apa-pun
           <label class="chk"><input type="checkbox" id="rememberKey"> ingat selama server hidup (di memori saja)</label>
         </div>
         <div class="notice hide" id="keyCheck"></div>
-        <p class="hint">
+        <p class="hint" id="cookieRule">
           Buat di <b>create.roblox.com → Credentials → API Keys</b> → tambahkan API <b>Assets</b> dengan operasi
           <span class="mono">Read</span> + <span class="mono">Write</span>, dan set <span class="mono">creator</span> ke User ID atau Group ID di atas.
           Kunci ini <b>tidak pernah</b> ditulis ke disk dan tidak masuk log.
@@ -342,6 +350,26 @@ https://www.roblox.com/library/1234567893/apa-pun
         4 · <b>Aset terkunci:</b> sebagian animasi dibatasi ("User is not authorized to access Asset") \u2014 kunci API tidak bisa mengambil aset milik kreator lain. Kalau kamu punya Place ID game tempat animasi itu dipakai, isi kolom Place ID; kalau tidak, unduh file <span class="mono">.rbxm</span>-nya lewat ekstensi/ALECTRA di browser-mu, lalu pakai tab <b>Dari file lokal</b>.<br>
         5 · <b>Verifikasi:</b> kolom ukuran + hash SHA-256 bisa kamu pakai memastikan byte yang di-upload identik dengan yang diambil (tidak ada re-encode).
       </p>
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;font-weight:600;font-size:13px">Kenapa ekstensi bisa mengunduh aset terkunci, tapi situs ini tidak? (baca ini dulu)</summary>
+        <div class="hint" style="margin-top:10px">
+          Ekstensi itu jalan <b>di dalam browser/Studio kamu yang sudah login</b>, dan permintaannya membawa
+          <b>sesi akunmu</b> ke Roblox. Bagi Roblox, permintaan itu datang <i>sebagai kamu</i> \u2014 jadi isi aset yang
+          cuma boleh dibuka oleh user login pun ikut terbuka.<br><br>
+          Situs ini <b>tidak pernah</b> menyentuh cookie sesi ({{COOKIE_RULE}}) \u2014 itu aturanmu sendiri, dan aturan yang bagus.
+          Kredensial satu-satunya di sini adalah <b>kunci API Open Cloud</b>, dan kunci itu hanya bisa menyentuh
+          aset milik akun/grup yang kamu beri izin. Itu juga sebabnya kamu melihat
+          <span class="mono">User is not authorized to access Asset</span> <b>sebelum</b> kunci dipakai sama sekali:
+          pesannya dari CDN Roblox, di tahap <b>ambil isi</b>, bukan dari tahap upload.<br><br>
+          Dan Roblox memang <b>tidak menyediakan API resmi</b> untuk mengunduh isi animasi milik orang lain
+          (sudah aku cek: tidak ada endpoint konten di Assets API; assetdelivery menolak tanpa sesi).
+          Jadi jangan tunggu tombol ajaib dari sisi server \u2014 memang tidak ada. Yang bisa dilakukan:
+          <br>\u2022 <b>Place ID</b> \u2014 kalau kamu punya hak di game tempat animasi itu dipakai.
+          <br>\u2022 <b>Dari file lokal</b> \u2014 kamu unduh file <span class="mono">.rbxm</span>-nya lewat alat yang jalan di
+          sesimu sendiri (ekstensi/ALECTRA), lalu situs ini yang mengurus upload + pemetaan ID-nya. Byte tidak diubah
+          (dicek SHA-256), jadi hasilnya identik dengan aslinya.
+        </div>
+      </details>
     </div>
   </div>
 </div>
@@ -455,6 +483,7 @@ https://www.roblox.com/library/1234567893/apa-pun
 
   /* ---------------- render tabel ---------------- */
   var STATUS_LABEL = { pending: "menunggu", fetching: "mengambil", uploading: "mengunggah", processing: "diproses", done: "selesai", error: "gagal", skipped: "dilewati" };
+  var STAGE_LABEL = { fetch: "tahap: ambil isi (tanpa kunci)", upload: "tahap: upload (memakai kunci)" };
   function renderTable() {
     var rows = $("#rows");
     if (!state.items.length) { rows.innerHTML = '<tr><td colspan="5" style="color:var(--mut-2);padding:16px">Belum ada job.</td></tr>'; return; }
@@ -464,6 +493,7 @@ https://www.roblox.com/library/1234567893/apa-pun
         ? '<a href="https://www.roblox.com/library/' + it.newId + '" target="_blank" rel="noopener">' + it.newId + "</a>"
         : (it.error
           ? '<span title="' + esc(it.error) + '" style="color:#fecaca;cursor:help">' + esc(it.error.slice(0, 44)) + (it.error.length > 44 ? "\u2026" : "") + "</span>" +
+            (it.stage ? '<span class="errhint">' + esc(STAGE_LABEL[it.stage] || ("tahap: " + it.stage)) + "</span><br>" : "") +
             (it.hint
               ? '<span class="errhint">\u21b3 ' + esc(it.hint) +
                 (/file lokal/i.test(it.hint) ? ' <button type="button" class="inline" data-goto-file="1">buka tab Dari file lokal</button>' : "") +
@@ -564,11 +594,11 @@ https://www.roblox.com/library/1234567893/apa-pun
       if (d.type === "item") {
         var it = state.items.filter(function (x) { return x.id === d.id; })[0];
         if (!it) { it = { id: d.id }; state.items.push(it); }
-        ["status", "newId", "error", "hint", "bytesLength", "sha256", "assetType", "ms"].forEach(function (k) { if (d[k] != null) it[k] = d[k]; });
+        ["status", "stage", "newId", "error", "hint", "bytesLength", "sha256", "assetType", "ms"].forEach(function (k) { if (d[k] != null) it[k] = d[k]; });
         renderTable();
         if (d.status === "done") logLine("ID " + d.id + " → " + d.newId + (d.sha256 ? "  (sha256 " + d.sha256.slice(0, 10) + "…)" : ""), "ok");
         if (d.status === "error") {
-          logLine("ID " + d.id + " gagal: " + d.error, "err");
+          logLine("ID " + d.id + " gagal" + (d.stage === "fetch" ? " (di tahap ambil isi \u2014 kunci API belum dipakai)" : d.stage === "upload" ? " (di tahap upload)" : "") + ": " + d.error, "err");
           if (d.hint) logLine("   sebab: " + d.hint, "warn");
         }
         if (d.status === "fetching") logLine("ID " + d.id + " · mengambil isi aset…");
@@ -939,6 +969,16 @@ https://www.roblox.com/library/1234567893/apa-pun
       else logLine("password salah", "err");
     });
   });
+
+  /* aturan cookie ditulis di satu tempat saja, supaya tidak ada dua versi kalimat */
+  (function () {
+    var rule = "server ini tidak menerima, meneruskan, maupun menyimpan cookie .ROBLOSECURITY";
+    Array.prototype.forEach.call(document.querySelectorAll(".hint, .hint *"), function (el) {
+      if (el.children.length === 0 && el.textContent.indexOf("{{COOKIE_RULE}}") >= 0) {
+        el.textContent = el.textContent.replace("{{COOKIE_RULE}}", rule);
+      }
+    });
+  })();
 
   /* ---------------- restore preferensi (bukan kredensial) ---------------- */
   ["userId", "groupId", "placeId", "namePrefix"].forEach(function (k) {

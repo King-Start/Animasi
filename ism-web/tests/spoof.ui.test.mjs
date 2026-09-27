@@ -193,11 +193,15 @@ ok("ringkasan total = 2", $("#sTotal").textContent === "2");
 
 FakeEventSource.last.emit({ type: "item", id: "180435571", status: "fetching" });
 FakeEventSource.last.emit({ type: "item", id: "180435571", status: "done", newId: "9876543210", ms: 1234, sha256: "abcdef1234567890" });
-FakeEventSource.last.emit({ type: "item", id: "180426354", status: "error", error: "Authentication required to access Asset.", hint: "Isi aset ini dibatasi Roblox atau kreatornya. Pakai tab 'Dari file lokal'." });
+FakeEventSource.last.emit({ type: "item", id: "180426354", status: "error", stage: "fetch", error: "Authentication required to access Asset.", hint: "Aset ini dibatasi Roblox: pakai tab 'Dari file lokal'." });
 ok("status sukses tampil di tabel", /selesai/.test($("#rows").textContent));
 ok("ID baru tampil sebagai tautan library", /roblox\.com\/library\/9876543210/.test($("#rows").innerHTML));
 ok("error item tampil di tabel", /Authentication required/.test($("#rows").textContent));
   ok("petunjuk perbaikan ikut tampil di tabel", /Dari file lokal/.test($("#rows").textContent), $("#rows").textContent.slice(0, 200));
+  ok("tahap kegagalan ditampilkan: ambil isi, bukan upload",
+    /tahap: ambil isi \(tanpa kunci\)/.test($("#rows").textContent), $("#rows").textContent.slice(0, 220));
+  ok("log menyebut kunci API belum dipakai di tahap itu",
+    /tahap ambil isi[^:]*kunci API belum dipakai/.test($("#log").textContent), $("#log").textContent.slice(-200));
   ok("error terkunci menawarkan tombol langsung ke tab file lokal",
     /data-goto-file/.test($("#rows").innerHTML), $("#rows").innerHTML.slice(0, 220));
   click($("#tabId"));
