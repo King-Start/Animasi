@@ -53,6 +53,9 @@ let meBody = { loggedIn: false };
 let jobSnapshot = null;
 let recheckBody = null;
 const recheckCalls = [];
+let uploadCheckBody = null;
+const uploadCheckCalls = [];
+let reportText = "# Laporan job ISpooferMotion Web\njobId : job-uji\n";
 let checkKeyBody = {
   ok: false, usingServerKey: false, verdict: "reject",
   credential: { kind: "opaque-long", length: 964, label: "kredensial 964 karakter \u2014 bukan bentuk kunci API Open Cloud (biasanya ~48)" },
@@ -114,6 +117,11 @@ const dom = new JSDOM(html, {
         return reply(202, { jobId: "job-uji", total: 2 });
       }
       if (path.includes("/api/jobs/job-uji/events")) return reply(200, {});
+      if (path.endsWith("/api/check-upload")) {
+        uploadCheckCalls.push({ method: (opts && opts.method) || "GET", body: JSON.parse((opts && opts.body) || "{}") });
+        return reply(200, uploadCheckBody);
+      }
+      if (path.includes("/api/jobs/job-uji/report")) return reply(200, reportText);
       if (path.includes("/api/jobs/job-uji/recheck")) {
         recheckCalls.push({ method: (opts && opts.method) || "GET" });
         return reply(200, recheckBody);
@@ -428,6 +436,56 @@ ok("tile 'Belum pasti' kembali 0", $("#sUncertain").textContent === "0", $("#sUn
 ok("keluaran plugin ikut berisi ID yang dipulihkan",
   $("#output").value.includes("78384449570093"), JSON.stringify($("#output").value));
 ok("log melaporkan pemulihan", /dipulihkan/.test($("#log").textContent), $("#log").textContent.slice(-220));
+
+heading("10. Uji izin upload & laporan (alat baru waktu gagal terus)");
+ok("tombol 'Uji izin upload' ada", Boolean($("#uploadCheckBtn")));
+ok("tombol 'Unduh laporan' ada", Boolean($("#reportBtn")));
+
+// 1) kunci diterima → kotak hijau, log jelas, tidak menyalahkan IP
+uploadCheckBody = {
+  ok: true, verdict: "ok", status: 400, message: "Invalid request body: fileContent is required",
+  hint: "Kunci diterima sampai tahap validasi isi permintaan (400 memang diharapkan di uji ini).",
+  egressIp: "203.0.113.9", target: { userId: "1234567" }
+};
+click($("#uploadCheckBtn"));
+await wait(80);
+ok("uji izin memanggil POST /api/check-upload", uploadCheckCalls.length === 1 && uploadCheckCalls[0].method === "POST",
+  JSON.stringify(uploadCheckCalls));
+ok("User ID tujuan ikut dikirim", uploadCheckCalls[0].body.userId === "1234567", JSON.stringify(uploadCheckCalls[0].body));
+ok("kotak hasil tampil (tidak disembunyikan)", $("#verifyBox").style.display === "block", $("#verifyBox").style.display);
+ok("kotak bertanda sukses (hijau), bukan error",
+  $("#verifyBox").className.includes("ok") && !$("#verifyBox").className.includes("err"),
+  $("#verifyBox").className);
+ok("pesan asli Roblox ditampilkan apa adanya",
+  /Invalid request body/.test($("#verifyBox").textContent), $("#verifyBox").textContent.slice(0, 160));
+ok("IP keluar server ikut ditampilkan", /203\.0\.113\.9/.test($("#verifyBox").textContent), $("#verifyBox").textContent.slice(0, 200));
+ok("log menyatakan kunci & izin diterima", /KUNCI & IZIN DITERIMA/.test($("#log").textContent), $("#log").textContent.slice(-260));
+
+// 2) kunci kurang izin Write → kotak merah + langkah perbaikan
+uploadCheckBody = {
+  ok: false, verdict: "scope", status: 403,
+  message: "Insufficient permission to create asset for the creator",
+  hint: "Kunci benar, tapi BELUM BOLEH menulis ke target itu. Centang operasi Write pada API Assets.",
+  egressIp: "203.0.113.9"
+};
+click($("#uploadCheckBtn"));
+await wait(80);
+ok("verdict 'scope' ditampilkan di log", /scope/.test($("#log").textContent), $("#log").textContent.slice(-260));
+ok("kotak bertanda error (merah)", $("#verifyBox").className.includes("err"), $("#verifyBox").className);
+ok("langkah perbaikan (centang Write) tampil di kotak",
+  /Write/.test($("#verifyBox").textContent), $("#verifyBox").textContent.slice(0, 220));
+ok("bukan disalahkan ke IP", !/IP server ini dicurigai|diblokir IP/i.test($("#verifyBox").textContent), $("#verifyBox").textContent.slice(0, 220));
+
+// 3) unduh laporan
+const unduhanSebelum = win.__downloads || 0;
+click($("#reportBtn"));
+await wait(80);
+ok("tombol laporan memanggil /api/jobs/{id}/report",
+  calls.some((c) => /\/api\/jobs\/job-uji\/report$/.test(c.path)), JSON.stringify(calls.slice(-3).map((c) => c.path)));
+ok("berkas laporan benar-benar diunduh", (win.__downloads || 0) === unduhanSebelum + 1,
+  String((win.__downloads || 0) - unduhanSebelum));
+ok("log menjelaskan isi laporan (tanpa kredensial)",
+  /laporan diunduh/.test($("#log").textContent) && /tanpa kredensial/.test($("#log").textContent), $("#log").textContent.slice(-200));
 
 console.log("\n" + "=".repeat(54));
 console.log(`${pass} lolos · ${fail} gagal`);

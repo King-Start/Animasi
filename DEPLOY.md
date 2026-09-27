@@ -89,6 +89,7 @@ yang saya pasang supaya kunci tidak pernah terbuka di URL publik tanpa sengaja.
 | `CONCURRENCY` | opsional | `3` (1–6) |
 | `MAX_ITEMS` | opsional | `120` (1–500) |
 | `JOB_RATE_LIMIT` | opsional | `10` job/menit/IP |
+| `REPORT_DIR` | opsional | `ism-web/reports` — folder laporan job (teks, tanpa kredensial). Berguna kalau container punya volume sendiri. |
 | `POLL_TIMEOUT_MS` | opsional | `90000` — berapa lama menunggu jawaban akhir Roblox setelah upload. Kalau habis, item jadi **belum pasti** (tidak dianggap gagal, tidak di-upload ulang) dan ID-nya bisa dipulihkan lewat tombol *Periksa ulang*. |
 
 > **Jangan set `PORT` atau `HOST`** — Railway mengisi `PORT` sendiri dan server

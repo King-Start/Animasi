@@ -96,6 +96,29 @@ atau butuh kepemilikan, aset baru itu pun butuh cara pakai yang sama. Jadi setel
 - tempel ID barunya di jendela **"Replace Ids"** milik plugin Studio — ID itu memang ID milikmu,
   jadi bisa kamu pakai di tempatmu sendiri.
 
+## Kalau masih gagal: pakai tiga tombol ini
+
+Halaman spoofer punya tiga tombol di panel **Jalankan** yang menjawab "kok gagal terus" tanpa menebak-nebak:
+
+| Tombol | Yang dilakukan | Cara membaca hasilnya |
+| --- | --- | --- |
+| **Cek kunci** | Membaca status kunci + mencoba beberapa operasi baca | Melihat bentuk kunci, masa berlaku, dan daftar izinnya |
+| **Uji izin upload** | Menembak endpoint upload dengan permintaan yang **sengaja tidak lengkap**, jadi **tidak ada aset yang dibuat** | Lihat tabel di bawah |
+| **Unduh laporan** | Mengunduh laporan job dalam bentuk teks | Isinya: status tiap item, HTTP status, **pesan asli dari Roblox**, sha256, dan langkah saran. Aman dikirim ke siapa pun — **tanpa kunci API** |
+
+Hasil **Uji izin upload**:
+
+| Yang muncul | Artinya | Yang dilakukan |
+| --- | --- | --- |
+| `KUNCI & IZIN DITERIMA` (HTTP 400 pada uji kosong) | Kunci dan izin sudah benar; kalau upload tetap gagal, penyebabnya di isi berkas/tipe aset, bukan di kunci | Kirim laporan job |
+| `key-rejected` (HTTP 401 `Invalid API Key`) | Kunci salah salin, sudah dicabut, atau bukan kunci Open Cloud | Buat ulang di create.roblox.com → Credentials → API Keys, lalu tempel ulang (jangan pakai cookie) |
+| `scope` (HTTP 403 `Insufficient permission`) | Kunci benar, tapi belum boleh **menulis** ke User/Group itu | Edit kuncinya: centang operasi **Write** di API Assets + tambahkan User/Group ID tujuan ke daftar izin |
+| `blocked` / `blocked-waf` (HTTP 403 + halaman HTML) | Roblox menolak IP server ini | Jalankan server di komputermu, atau pakai userscript |
+| `rate-limited` (HTTP 429) | Kena batas permintaan per-IP | Tunggu 1–2 menit |
+| `cookie-refused` | Yang ditempel berbentuk cookie sesi | Server ini tidak meneruskan cookie — pakai API key |
+
+Catatan penting: sejak pembaruan ini, **setiap kegagalan upload menampilkan HTTP status aslinya**, dan pesan Roblox ditampilkan apa adanya. Jadi kalau kuncinya yang bermasalah, di tabel akan tertulis `HTTP 401` + `Invalid API Key` — bukan disamarkan jadi "gagal".
+
 ## Yang perlu diketahui
 - Server ini **tidak pernah** memakai cookie akun Roblox. Auth hanya API key / OAuth.
 - API key tidak ditulis ke disk dan tidak masuk log.

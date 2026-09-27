@@ -17,7 +17,7 @@
  *   - tidak mengirim data ke pihak ketiga mana pun
  */
 import http from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile, mkdir, readdir, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,10 @@ import { parseAssetList, formatForPlugin, formatPlain, formatPairs } from "./lib
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = "1.0.0";
+
+// Daftar fitur yang ada di build ini. UI menampilkannya supaya jelas server mana yang
+// sedang dipakai — kalau fiturnya tidak muncul, berarti yang jalan adalah versi lama.
+const FEATURES = ["pending-confirm", "recheck", "preflight-upload", "job-report"];
 
 /* ------------------------------------------------------------------ config */
 const cfg = {
@@ -47,6 +51,8 @@ const cfg = {
   // Berapa lama menunggu jawaban akhir Roblox setelah upload. Kalau habis, item
   // TIDAK dianggap gagal — jadi "belum pasti" dan ID-nya dicari di inventaris.
   pollTimeoutMs: Math.max(1000, Number(process.env.POLL_TIMEOUT_MS || 90000)),
+  // Folder laporan job. Bisa dipindah supaya pengujian tidak mengotori folder kerja.
+  reportDir: process.env.REPORT_DIR || path.resolve(__dirname, "reports"),
   oauth: {
     clientId: process.env.ROBLOX_OAUTH_CLIENT_ID || "",
     clientSecret: process.env.ROBLOX_OAUTH_CLIENT_SECRET || "",
@@ -202,6 +208,10 @@ function emit(job, event) {
 
 /** IP keluar server ini (dipakai untuk menjelaskan kalau Roblox memblokir IP data center). */
 let egressCache = { at: 0, ip: null };
+// IP keluar yang terakhir diketahui (dipakai laporan job & UI supaya tidak selalu menembak ipify).
+let egressIpLast = null;
+setInterval(() => { serverEgressIp().then((ip) => { if (ip) egressIpLast = ip; }).catch(() => {}); }, 5 * 60_000).unref?.();
+
 async function serverEgressIp() {
   if (Date.now() - egressCache.at < 10 * 60_000) return egressCache.ip;
   try {
@@ -323,7 +333,62 @@ async function reconcileNow(job) {
   if (!job.items.some((i) => i.status === "pending-confirm")) {
     job.status = job.summary.error ? "finished-with-errors" : "finished";
   }
+  job.authKind = job.authKind || (job.auth && job.auth.kind) || null;
+  writeJobReport(job).catch(() => {}); // laporan ikut diperbarui setelah pemulihan
   return recovered;
+}
+
+/**
+ * Tulis laporan job ke berkas teks (tanpa kredensial apa pun) supaya kalau ada
+ * kegagalan, penyebabnya bisa dibaca belakangan — termasuk kalau servernya sudah
+ * mati/restart. Disimpan di <server>/reports/<jobId>.txt, maksimal 25 berkas terakhir.
+ */
+function jobReportText(job) {
+  const lines = [];
+    lines.push("# Laporan job ISpooferMotion Web");
+    lines.push("jobId        : " + job.id);
+    lines.push("waktu        : " + new Date(job.createdAtMs || Date.now()).toISOString());
+    lines.push("status       : " + job.status);
+    lines.push("target       : " + (job.options && job.options.target
+      ? (job.options.target.groupId ? "grup " + job.options.target.groupId : "user " + job.options.target.userId)
+      : "?"));
+    lines.push("auth         : " + (job.authKind || (job.auth && job.auth.kind) || "?") + " (nilai kredensial tidak pernah disimpan)");
+    lines.push("ringkasan    : " + JSON.stringify(job.summary));
+    lines.push("egressIp     : " + (egressIpLast || "?"));
+    lines.push("versi server : " + VERSION + " · fitur " + FEATURES.join(", "));
+    lines.push("");
+    for (const it of job.items) {
+      lines.push("## item " + it.id + (it.name ? " (" + it.name + ")" : ""));
+      lines.push("   status      : " + it.status + (it.stage ? " · tahap " + it.stage : ""));
+      lines.push("   httpStatus  : " + (it.httpStatus == null ? "-" : it.httpStatus));
+      lines.push("   error       : " + (it.error || "-"));
+      lines.push("   hint        : " + (it.hint || "-"));
+      lines.push("   newId       : " + (it.newId || "-") + (it.recovered ? "  (dipulihkan)" : ""));
+      lines.push("   operationId : " + (it.operationId || "-"));
+      lines.push("   sha256      : " + (it.sha256 || "-") + " · byte " + (it.bytesLength == null ? "-" : it.bytesLength));
+      if (Array.isArray(it.tried) && it.tried.length) {
+        lines.push("   percobaan   :");
+        for (const tr of it.tried.slice(0, 12)) {
+          lines.push("     - " + [tr.endpoint, tr.ua, tr.status].filter((x) => x != null).join(" · "));
+        }
+      }
+      lines.push("");
+    }
+  return lines.join("\n");
+}
+
+async function writeJobReport(job) {
+  try {
+    const dir = cfg.reportDir;
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, job.id + ".txt"), jobReportText(job), "utf8");
+    const all = (await readdir(dir)).filter((f) => f.endsWith(".txt")).sort();
+    for (const ol of all.slice(0, Math.max(0, all.length - 25))) {
+      await unlink(path.join(dir, ol)).catch(() => {});
+    }
+  } catch (err) {
+    log("laporan gagal ditulis:", err.message);
+  }
 }
 
 /** Susun output siap-tempel dari item yang sudah punya ID baru. */
@@ -447,6 +512,9 @@ async function processItem(job, item) {
       return;
     } catch (err) {
       const re = err instanceof RobloxError ? err : new RobloxError(err.message || String(err));
+      if (item.httpStatus == null && (re.status || re.code) && Number(re.status || re.code) >= 400) {
+        item.httpStatus = Number(re.status || re.code);
+      }
 
       // Timeout / jawaban belum turun: upload-nya biasanya SUDAH jadi. Jangan ulangi
       // upload (itu bikin aset ganda), tapi tandai "belum pasti" lalu cari ID-nya.
@@ -489,7 +557,8 @@ async function processItem(job, item) {
       item.hint = roblox.explainError(re.message) || null;
       // kode HTTP dari Roblox (401/403/429/…) supaya bisa dibedakan: butuh login,
       // diblokir IP, atau kena batas permintaan.
-      item.httpStatus = Number(re.code) || null;
+      const hs = Number(re.status) || Number(re.code) || 0;
+      item.httpStatus = hs >= 400 ? hs : null;
       item.ms = now() - t0;
       job.summary.error++;
       job.summary.pending--;
@@ -533,6 +602,11 @@ async function runJob(job) {
   }
 
   emit(job, { type: "job", status: job.status, summary: job.summary });
+
+  // Simpan laporan teks (tanpa kredensial) supaya kalau ada kegagalan, sebabnya
+  // bisa dibaca lagi kapan pun — termasuk setelah server restart.
+  job.authKind = (job.auth && job.auth.kind) || job.authKind || null;
+  writeJobReport(job).catch(() => {});
 
   // kredensial per-job dibuang begitu selesai, kecuali diminta disimpan
   if (!job.options.rememberKey) job.auth = null;
@@ -644,7 +718,8 @@ const server = http.createServer(async (req, res) => {
           apiKey: true
         },
         limits: { maxItems: cfg.maxItemsPerJob, concurrency: cfg.concurrency, maxBytes: roblox.config.maxAssetBytes },
-        egressIp: await serverEgressIp(),
+        features: FEATURES,
+        egressIp: await (async () => { const ip = await serverEgressIp(); if (ip) egressIpLast = ip; return ip; })(),
         userAgents: (roblox.config.userAgents || []).map((u) => String(u).split("/")[0]).slice(0, 5),
         cookieAuth: false,
         note: "Server ini tidak menerima cookie sesi Roblox. Auth hanya Open Cloud API key atau OAuth 2.0."
@@ -931,6 +1006,51 @@ const server = http.createServer(async (req, res) => {
           `(panjang kunci ${ks.length || 0}, tak-terlihat ${ks.hiddenChars || 0}, aneh ${(ks.odd || []).length}${probeRingkas ? ", uji " + probeRingkas : ""})`
       );
       return json(res, 200, { ...result, usingServerKey: !body.apiKey && Boolean(cfg.serverApiKey) });
+    }
+
+    /* ---------- uji izin upload (TIDAK membuat aset apa pun) ---------- */
+    if (p === "/api/check-upload" && req.method === "POST") {
+      if (!rateLimit(req, "checkupload", 20, 60_000)) {
+        return json(res, 429, { error: "rate-limited", message: "Terlalu banyak percobaan. Tunggu sebentar." });
+      }
+      const body = await readJson(req);
+      const target = {
+        userId: String(body.userId || "").trim() || null,
+        groupId: String(body.groupId || "").trim() || null
+      };
+      job_validateTarget(target); // melempar kalau ID tujuan kosong/dua-duanya
+      let auth;
+      try {
+        auth = resolveAuth(req, body.apiKey);
+      } catch (err) {
+        return json(res, 200, {
+          ok: false, verdict: "no-credential", status: 0,
+          message: err.message,
+          hint: "Isi Open Cloud API key dulu (atau login OAuth).",
+          target
+        });
+      }
+      const out = await roblox.probeUploadPermission({ auth, creator: target });
+      log(`check-upload: target=${target.groupId ? "group " + target.groupId : "user " + target.userId} → ${out.verdict} (HTTP ${out.status})`);
+      return json(res, 200, { ...out, egressIp: egressIpLast || (await serverEgressIp()) });
+    }
+
+    /* ---------- laporan job dalam bentuk teks (untuk disalin/diirim) ---------- */
+    if (/^\/api\/jobs\/[^/]+\/report$/.test(p) && req.method === "GET") {
+      const jobId = p.split("/")[3];
+      const job = jobs.get(jobId);
+      if (!job) {
+        const file = path.join(cfg.reportDir, jobId + ".txt");
+        if (existsSync(file)) {
+          const txt = await readFile(file, "utf8").catch(() => null);
+          if (txt) {
+            res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+            return res.end(txt);
+          }
+        }
+        return json(res, 404, { error: "Job tidak ditemukan atau sudah kedaluwarsa." });
+      }
+      return json(res, 200, { ok: true, text: jobReportText(job) });
     }
 
     /* ---------- util: parse input saja (dipakai UI untuk pratinjau) ---------- */

@@ -60,6 +60,7 @@ Server yang sama juga menyajikan seluruh situs di `http://localhost:8787/`
 | `CONCURRENCY` | `3` | job diproses paralel (1–6) |
 | `MAX_ITEMS` | `120` | batas jumlah ID per job (1–500) |
 | `JOB_RATE_LIMIT` | `10` | job per menit per IP |
+| `REPORT_DIR` | `ism-web/reports` | folder laporan job (maks. 25 berkas terakhir) |
 | `POLL_TIMEOUT_MS` | `90000` | batas tunggu jawaban akhir upload; lewat batas → item `belum pasti` (tidak di-upload ulang) |
 | `ALLOWED_ORIGINS` | — | daftar origin CORS (mis. kalau UI di-host di GitHub Pages) |
 | `ALLOW_ASSET_HOSTS` | — | host CDN tambahan (khusus dev/mirror; default hanya host Roblox) |
@@ -121,7 +122,7 @@ curl -s localhost:8787/api/jobs -H 'content-type: application/json' -d '{
 node ism-web/tests/api.test.mjs
 ```
 
-210 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
+232 pengujian, dijalankan terhadap **server Roblox tiruan** lewat HTTP sungguhan:
 
 - alur lengkap ID → byte → upload → ID baru, termasuk upload ke grup dan operasi async
 - **bukti byte identik**: SHA-256 byte yang diterima endpoint upload dibandingkan dengan byte dari CDN
@@ -140,6 +141,12 @@ node ism-web/tests/api.test.mjs
   laporan `rechecked: { recovered, uncertainLeft }`
 - target grup tetap jujur: Roblox tidak punya daftar aset grup publik, jadi item dibiarkan
   `pending-confirm` dengan saran cek dashboard (tidak diklaim gagal, tidak diklaim selesai)
+- **`POST /api/check-upload`** menguji kunci + izin Write ke target TANPA membuat aset apa pun
+  (permintaannya sengaja tidak lengkap). Yang dibaca urutan penolakannya: 400 "isi tidak valid"
+  = kunci diterima · 401 = kunci ditolak · 403 `Insufficient permission` = kurang izin Write ·
+  403 halaman HTML = IP diblokir · 429 = batas per-IP
+- **laporan job** (`GET /api/jobs/{id}/report`, juga tersimpan di `REPORT_DIR`) berisi status per
+  item, HTTP status, pesan asli Roblox, sha256, operationId, dan hint — dijamin **tanpa kredensial**
 
 ---
 

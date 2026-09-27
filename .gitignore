@@ -25,3 +25,6 @@ Thumbs.db
 
 # artefak paket (repo ini sendiri sudah jadi paketnya)
 *.zip
+
+# laporan job (dibuat saat server jalan, bukan sumber)
+ism-web/reports/

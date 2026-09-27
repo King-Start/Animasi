@@ -586,6 +586,107 @@ export function createRobloxClient(config = {}) {
     };
   }
 
+  /**
+   * Uji IZIN UPLOAD tanpa membuat aset apa pun.
+   *
+   * Permintaannya SENGAJA tidak lengkap (tidak ada berkas) dan memakai assetType yang
+   * tidak dikenal, jadi Roblox pasti menolak di tahap validasi isi — tidak ada aset
+   * yang tercipta. Yang kita baca adalah URUTAN penolakannya:
+   *   - kalau KUNCI/IZIN/IP yang bermasalah, penolakan datang lebih dulu (401/403/429);
+   *   - kalau jawabannya 400 "isi permintaan tidak valid", artinya kunci & izin sudah
+   *     diterima sampai tahap validasi → masalahnya bukan di kunci.
+   * Ini yang membedakan "kunci kurang izin Write" dari "IP server ditolak Roblox".
+   */
+  async function probeUploadPermission({ auth, creator, assetType = "Animation" } = {}) {
+    const creatorId = String((creator && (creator.userId || creator.groupId)) || "").trim();
+    const url = `${cfg.apisBase.replace(/\/$/, "")}/assets/v1/assets`;
+    const payload = {
+      assetType: "__ism_preflight__",
+      displayName: "ISM preflight (tidak diunggah)",
+      creationContext: creator && creator.groupId
+        ? { creator: { groupId: creatorId } }
+        : { creator: { userId: creatorId } }
+    };
+
+    let status = 0, text = "", json = null, netErr = null;
+    try {
+      const res = await doFetch(url, {
+        method: "POST",
+        headers: { ...authHeaders(auth), "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      status = res.status;
+      text = await res.text().catch(() => "");
+      try { json = JSON.parse(text); } catch { /* balasan bukan JSON (biasanya halaman blokir) */ }
+    } catch (e) {
+      netErr = e;
+    }
+
+    const raw = String(
+      (json && json.errors && json.errors[0] && json.errors[0].message) || text || (netErr && netErr.message) || ""
+    ).slice(0, 400);
+    const low = raw.toLowerCase();
+    const isHtml = /^\s*</.test(text) || /<html/i.test(text);
+
+    let verdict, hint, ok = false;
+    if (netErr && /cookie sesi/i.test(String(netErr.message || ""))) {
+      verdict = "cookie-refused";
+      hint = "Yang ditempel berbentuk cookie sesi Roblox. Server ini tidak pernah meneruskan cookie — buat Open Cloud API key di create.roblox.com → Credentials → API Keys.";
+    } else if (netErr) {
+      verdict = "network";
+      hint = "Server tidak berhasil menghubungi Roblox dari mesin ini. Coba lagi, atau jalankan server di komputermu.";
+    } else if (status === 400 && /api key is not provided in a valid format|invalid authentication data/i.test(raw)) {
+      verdict = "key-format";
+      hint = "Bentuk kuncinya ditolak Roblox. Salin ulang kunci dari create.roblox.com → Credentials → API Keys (jangan pakai cookie).";
+    } else if (status === 400) {
+      ok = true;
+      verdict = "ok";
+      hint = "Kunci diterima sampai tahap validasi isi permintaan (400 memang diharapkan di uji ini). Ini artinya masalahnya BUKAN di kunci/izin.";
+    } else if (status === 401) {
+      verdict = "key-rejected";
+      hint = "Kunci ditolak: kemungkinan kedaluwarsa, salah salin, atau belum punya izin Write untuk kredensial ini.";
+    } else if (status === 403 && /permission|not authorized|forbidden|creator/i.test(raw)) {
+      verdict = "scope";
+      hint = "Kunci benar, tapi BELUM BOLEH menulis ke target itu. Di create.roblox.com → API Keys → Edit: centang operasi **Write** pada API Assets, dan pastikan User/Group ID tujuannya ada di daftar yang diizinkan.";
+    } else if (status === 403 && isHtml) {
+      verdict = "blocked-waf";
+      hint = "Roblox menjawab dengan halaman blokir (bukan pesan API). Biasanya karena IP server ini dicurigai. Jalankan server di komputermu sendiri, atau pakai userscript dari browser.";
+    } else if (status === 403) {
+      verdict = "blocked";
+      hint = "Roblox menolak permintaan dari IP server ini (bukan soal kuncimu). Jalankan server di komputermu sendiri, atau pakai userscript dari browser.";
+    } else if (status === 429) {
+      verdict = "rate-limited";
+      hint = "Kena batas permintaan Roblox (per-IP). Tunggu 1–2 menit, atau jalankan server lokal.";
+    } else if (status === 404) {
+      verdict = "wrong-endpoint";
+      hint = "Alamat API tidak dikenal server ini. Ganti alamat server (deploy ulang versi terbaru).";
+    } else if (status >= 500) {
+      verdict = "roblox-down";
+      hint = "Roblox sendiri sedang bermasalah (5xx). Coba lagi beberapa menit.";
+    } else {
+      verdict = "unknown";
+      hint = "Balasan tak terduga — kirim laporan ini supaya bisa diperiksa.";
+    }
+
+    return {
+      ok, verdict, status, message: raw || ("HTTP " + status), htmlBlock: isHtml,
+      target: creator && creator.groupId ? { groupId: creatorId } : { userId: creatorId },
+      endpoint: url,
+      hint
+    };
+  }
+
+  /**
+   * Uji IZIN UPLOAD tanpa membuat aset apa pun.
+   *
+   * Permintaannya SENGAJA tidak lengkap (tidak ada berkas) dan memakai assetType yang
+   * tidak dikenal, jadi Roblox pasti menolak di tahap validasi isi — tidak ada aset
+   * yang tercipta. Yang kita baca adalah URUTAN penolakannya:
+   *   - kalau KUNCI/IZIN/IP yang bermasalah, penolakan datang lebih dulu (401/403/429);
+   *   - kalau jawabannya 400 "isi permintaan tidak valid", artinya kunci & izin sudah
+   *     diterima sampai tahap validasi → masalahnya bukan di kunci.
+   * Ini yang membedakan "kunci kurang izin Write" dari "IP server ditolak Roblox".
+   */
   /* --- 4. tunggu operasi selesai -> asset ID baru --- */
   async function pollOperation(operation, auth, { timeoutMs = 60000, intervalMs = 900 } = {}) {
     const auth2 = authHeaders(auth);
@@ -1102,6 +1203,7 @@ export function createRobloxClient(config = {}) {
     explainError,
     downloadAsset,
     uploadAsset,
+    probeUploadPermission,
     pollOperation,
     assetTypeName,
     contentTypeFor,

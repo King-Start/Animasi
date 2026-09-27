@@ -17,6 +17,8 @@
  */
 import http from "node:http";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import os from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +51,7 @@ const seen = {
   inventoryItems: [],   // isi daftar aset kreator (untuk uji pemulihan ID)
   inventoryDenied: false,
   inventory: [],        // percobaan membaca inventaris
+  preflight: [],        // percobaan "uji izin upload" (tanpa berkas)
   introspect: [],       // kunci yang dikirim ke endpoint introspect
   probe: []             // uji fungsi kunci (asset-read / user-read)
 };
@@ -160,11 +163,13 @@ const mockServer = http.createServer(async (req, res) => {
   /* --- Open Cloud: create asset --- */
   if (url.pathname === "/assets/v1/assets" && req.method === "POST") {
     const auth = { apiKey: req.headers["x-api-key"] || null, bearer: (req.headers.authorization || "").replace(/^Bearer /, "") || null };
+        const isMultipart = /multipart\/form-data/i.test(String(req.headers["content-type"] || ""));
     const parts = parseMultipart(raw, req.headers["content-type"]);
     let request = null;
     try { request = JSON.parse(parts.request ? parts.request.body.toString("utf8") : "{}"); } catch { /* biarkan null */ }
 
     seen.uploads.push({
+      preflight: !isMultipart,
       auth, request, cookieHeader: req.headers.cookie || null,
       fileSha: parts.fileContent ? sha(parts.fileContent.body) : null,
       fileBytes: parts.fileContent ? parts.fileContent.body.length : 0,
@@ -176,8 +181,19 @@ const mockServer = http.createServer(async (req, res) => {
       return send(401, { errors: [{ code: 401, message: "Invalid authentication data provided" }] });
     }
     if (auth.apiKey === "key-tidak-valid") {
-      return send(401, { errors: [{ code: 401, message: "Invalid API Key provided" }] });
+      return send(401, { errors: [{ code: 401, message: /preflight|json/i.test(String(req.headers["content-type"] || "")) ? "Invalid API Key" : "Invalid API Key provided" }] });
     }
+    // --- uji izin upload (preflight): permintaan JSON tanpa berkas ---
+    // Roblox asli tidak akan membuat aset dari permintaan seperti ini; balasannya
+    // menunjukkan lebih dulu apakah kunci/izin/IP-nya diterima.
+    if (!isMultipart) {
+      seen.preflight.push({ key: auth.apiKey, ua: req.headers["user-agent"], path: url.pathname });
+      if (auth.apiKey === "key-tanpa-write") {
+        return send(403, { errors: [{ code: 403, message: "Insufficient permission to create asset for the creator" }] });
+      }
+      return send(400, { errors: [{ code: 3, message: "Invalid request body: fileContent is required" }] });
+    }
+
     // 429 pada percobaan pertama untuk kunci "key-sibuk" → menguji retry
     if (auth.apiKey === "key-sibuk") {
       seen.failures.rateLimited = (seen.failures.rateLimited || 0) + 1;
@@ -309,6 +325,7 @@ const mockPort = await new Promise((resolve) => {
 const APP_PORT = 8700 + Math.floor(Math.random() * 200);
 const BASE = `http://127.0.0.1:${APP_PORT}`;
 const MOCK = `http://127.0.0.1:${mockPort}`;
+const REPORT_DIR_UJI = path.join(os.tmpdir(), "ism-laporan-uji-" + Date.now());
 
 const child = spawn(process.execPath, [SERVER], {
   env: {
@@ -327,6 +344,7 @@ const child = spawn(process.execPath, [SERVER], {
     ROBLOX_OAUTH_CLIENT_SECRET: "secret-uji",
     ALLOW_ASSET_HOSTS: "127.0.0.1",
     POLL_TIMEOUT_MS: "2500", // cepat untuk uji: tiru Roblox yang tidak menjawab
+    REPORT_DIR: REPORT_DIR_UJI,
     JOB_RATE_LIMIT: "100",
     CONCURRENCY: "2",
     MAX_ITEMS: "10"
@@ -727,6 +745,10 @@ heading("2g. Rotasi User-Agent & status HTTP yang terlihat");
     JSON.stringify(health.body.userAgents));
   ok("health melaporkan IP keluar server (untuk menjelaskan blokir IP)",
     "egressIp" in health.body, JSON.stringify(Object.keys(health.body)));
+  ok("health menyebut fitur build ini (pending-confirm, recheck, preflight, laporan)",
+    Array.isArray(health.body.features) && health.body.features.includes("preflight-upload") &&
+      health.body.features.includes("pending-confirm") && health.body.features.includes("job-report"),
+    JSON.stringify(health.body.features));
 }
 
 heading("2h. Timeout tidak meng-upload ulang + pemulihan ID (kasus nyata)");
@@ -827,6 +849,94 @@ heading("2i. Pemulihan untuk target grup diberi tahu apa adanya");
     /grup|dashboard/i.test(String(snap.items[0].hint) + String(snap.items[0].error)),
     String(snap.items[0].hint));
   seen.neverConfirm = false;
+}
+
+heading("2j. Uji izin upload tanpa membuat aset (menjawab 'kok gagal terus')");
+{
+  const before = seen.uploads.filter((u) => !u.preflight).length;
+
+  // kunci sah + target benar → Roblox menolak di tahap validasi isi (400) = kunci DITERIMA
+  const good = await callJson("/api/check-upload", {
+    method: "POST", body: JSON.stringify({ apiKey: "key-uji-panjang", userId: "1234567" })
+  });
+  ok("kunci benar → verdict ok (bukan gagal)", good.body.verdict === "ok" && good.body.ok === true, JSON.stringify(good.body));
+  ok("HTTP 400 pada uji kosong dijelaskan sebagai 'kunci diterima'",
+    /validasi isi/i.test(String(good.body.hint)), String(good.body.hint));
+  ok("pesan asli Roblox ikut dikirim (bukan diterjemahkan sendiri)",
+    /Invalid request body/i.test(String(good.body.message)), String(good.body.message));
+  ok("target ikut dilaporkan", good.body.target && good.body.target.userId === "1234567", JSON.stringify(good.body.target));
+
+  // kunci salah
+  const bad = await callJson("/api/check-upload", {
+    method: "POST", body: JSON.stringify({ apiKey: "key-tidak-valid", userId: "1234567" })
+  });
+  ok("kunci ditolak → verdict key-rejected + HTTP 401",
+    bad.body.verdict === "key-rejected" && bad.body.status === 401, JSON.stringify(bad.body));
+  ok("saran memperbaiki kunci disertakan",
+    /kedaluwarsa|salah salin|izin Write/i.test(String(bad.body.hint)), String(bad.body.hint));
+
+  // kunci benar tapi belum ada izin Write ke target itu
+  const noScope = await callJson("/api/check-upload", {
+    method: "POST", body: JSON.stringify({ apiKey: "key-tanpa-write", userId: "1234567" })
+  });
+  ok("kurang izin → verdict scope, bukan disalahkan ke IP",
+    noScope.body.verdict === "scope" && noScope.body.status === 403, JSON.stringify(noScope.body));
+  ok("langkah perbaikan menyebut centang Write + daftar User/Group",
+    /Write/i.test(String(noScope.body.hint)) && /User|Group/i.test(String(noScope.body.hint)), String(noScope.body.hint));
+
+  // cookie: ditolak sebelum menyentuh Roblox
+  const cookie = await callJson("/api/check-upload", {
+    method: "POST",
+    body: JSON.stringify({
+      apiKey: "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_abc",
+      userId: "1234567"
+    })
+  });
+  ok("cookie sesi ditolak dengan alasan yang jelas", cookie.body.verdict === "cookie-refused", JSON.stringify(cookie.body));
+  ok("cookie tidak pernah sampai ke Roblox", seen.preflight.every((p) => !String(p.key).includes("DO-NOT-SHARE")));
+
+  // tanpa kredensial
+  const none = await callJson("/api/check-upload", { method: "POST", body: JSON.stringify({ userId: "1234567" }) });
+  ok("tanpa kredensial → diberi tahu, bukan crash", none.body.verdict === "no-credential", JSON.stringify(none.body));
+
+  // target salah
+  const noTarget = await callJson("/api/check-upload", {
+    method: "POST", body: JSON.stringify({ apiKey: "key-uji-panjang", userId: "1234567", groupId: "999" })
+  });
+  ok("User ID + Group ID sekaligus ditolak", noTarget.status === 400, JSON.stringify(noTarget.body));
+
+  ok("uji izin TIDAK membuat aset apa pun",
+    seen.uploads.filter((u) => !u.preflight).length === before,
+    String(seen.uploads.filter((u) => !u.preflight).length - before));
+  ok("uji izin memakai kunci yang dikirim user", seen.preflight.some((p) => p.key === "key-uji-panjang"), JSON.stringify(seen.preflight.map((p) => p.key)));
+}
+
+heading("2k. Laporan job (untuk dikirim ke mana pun, tanpa kredensial)");
+{
+  const secret = "key-rahasia-jangan-bocor-0987654321";
+  const job = await callJson("/api/jobs", {
+    method: "POST", body: JSON.stringify({ input: "180435571", apiKey: secret, options: { userId: "1234567" } })
+  });
+  for (let i = 0; i < 60; i++) {
+    await wait(300);
+    const st = await callJson("/api/jobs/" + job.body.jobId);
+    if (!["queued", "running"].includes(st.body.status)) break;
+  }
+  await wait(400); // beri waktu laporan ditulis ke berkas
+  const rep1 = await callJson("/api/jobs/" + job.body.jobId + "/report");
+  const text = String(rep1.body.text || "");
+  ok("laporan bisa diambil", rep1.status === 200 && text.length > 100, String(rep1.status));
+  ok("laporan memuat jobId, target, dan ringkasan",
+    text.includes(job.body.jobId) && text.includes("user 1234567") && text.includes("ringkasan"), text.slice(0, 200));
+  ok("laporan memuat status + sha256 per item", /status\s+:/.test(text) && /sha256\s+:/.test(text));
+  ok("laporan TIDAK memuat kunci API", !text.includes(secret), "kunci bocor di laporan!");
+  ok("laporan menjelaskan bahwa kreditial tidak disimpan", /tidak pernah disimpan/i.test(text));
+
+  // laporan tetap ada walau job sudah hilang dari memori (dibaca dari berkas)
+  const file = path.join(REPORT_DIR_UJI, job.body.jobId + ".txt");
+  ok("laporan disimpan sebagai berkas", existsSync(file), file);
+  const served = await call("/api/jobs/tidak-ada-job/report");
+  ok("job tak dikenal → 404 yang jelas", served.status === 404, String(served.status));
 }
 
 heading("2d. Penerjemah pesan error (explainError)");

@@ -314,6 +314,8 @@ https://www.roblox.com/library/1234567893/apa-pun
         <button class="btn primary" id="runBtn" type="button" disabled>Jalankan Spoofer</button>
         <button class="btn" id="probeBtn" type="button" disabled>Uji ambil saja (tanpa upload)</button>
         <button class="btn ghost" id="recheckBtn" type="button" title="Periksa operasi &amp; inventaris untuk item yang belum pasti">Periksa ulang hasil</button>
+        <button class="btn ghost" id="uploadCheckBtn" type="button" title="Menguji izin upload TANPA membuat aset apa pun">Uji izin upload</button>
+        <button class="btn ghost" id="reportBtn" type="button" title="Unduh laporan job (teks) — tanpa kredensial, aman dikirim ke siapa pun">Unduh laporan</button>
         <button class="btn danger hide" id="cancelBtn" type="button">Batalkan</button>
       </div>
       <p class="hint" id="runHint">Isi daftar ID dan tujuan upload dulu.</p>
@@ -332,6 +334,7 @@ https://www.roblox.com/library/1234567893/apa-pun
         <span class="mono" id="jobState" style="font-size:12px;color:var(--mut-2)">—</span>
       </div>
       <div class="progress"><i id="bar"></i></div>
+      <div class="notice hide" id="verifyBox" style="margin:10px 0"></div>
       <div class="stats">
         <div><div class="k">Total</div><div class="v" id="sTotal">0</div></div>
         <div><div class="k">Selesai</div><div class="v" id="sDone" style="color:var(--green)">0</div></div>
@@ -703,6 +706,23 @@ https://www.roblox.com/library/1234567893/apa-pun
     });
   }
 
+  /* Hasil uji izin upload ditampilkan apa adanya: hijau = kunci diterima, merah = bukan. */
+  function showVerify(b) {
+    var box = $("#verifyBox");
+    if (!box) return;
+    var good = Boolean(b && b.ok);
+    box.className = "notice " + (good ? "ok" : "err");
+    var judul = good
+      ? "Kunci &amp; izin diterima sampai tahap validasi isi permintaan."
+      : "Uji izin upload: " + esc((b && b.verdict) || "gagal") + (b && b.status ? " (HTTP " + b.status + ")" : "");
+    var pesan = b && b.message ? esc(b.message) : "";
+    var hint = b && b.hint ? esc(b.hint) : "";
+    var ip = b && b.egressIp ? "IP keluar server: " + esc(b.egressIp) : "";
+    box.innerHTML = "<b>" + judul + "</b>" + (pesan ? "<br>Jawaban Roblox: <code>" + pesan + "</code>" : "") +
+      (hint ? "<br>" + hint : "") + (ip ? "<br><small>" + ip + "</small>" : "");
+    box.style.display = "block";
+  }
+
   function setJobState(t) { $("#jobState").textContent = t; }
   function onFail(msg) {
     state.running = false;
@@ -830,6 +850,49 @@ https://www.roblox.com/library/1234567893/apa-pun
     $("#fileInfo").innerHTML = '<span class="mono" style="font-size:12.5px">' + esc(f.name) + " · " + (f.size / 1024).toFixed(1) + " KB</span>";
     refreshRun();
   }
+
+  /* ---- uji izin upload: TIDAK membuat aset apa pun ---- */
+  function ujiIzinUpload() {
+    var key = $("#keyInput") ? $("#keyInput").value.trim() : "";
+    var uid = $("#userId") ? $("#userId").value.trim() : "";
+    var gid = $("#groupId") ? $("#groupId").value.trim() : "";
+    if (!uid && !gid) { logLine("isi User ID atau Group ID tujuan dulu", "warn"); return; }
+    logLine("menguji izin upload ke " + (gid ? "grup " + gid : "user " + uid) + " — tidak ada aset yang dibuat\u2026");
+    api("/api/check-upload", { method: "POST", body: JSON.stringify({ apiKey: key, userId: gid ? "" : uid, groupId: gid }) })
+      .then(function (r) {
+        var b = r.body || {};
+        if (!r.ok) { logLine("uji izin tidak bisa dijalankan: " + (b.message || r.status), "err"); return; }
+        if (b.ok) {
+          logLine("uji izin: KUNCI & IZIN DITERIMA (HTTP " + b.status + " pada uji kosong). Masalah upload bukan di kunci.", "ok");
+        } else {
+          logLine("uji izin: " + b.verdict + " (HTTP " + b.status + ") · " + b.message, "err");
+        }
+        if (b.hint) logLine("sebab & langkah: " + b.hint, b.ok ? "ok" : "warn");
+        if (b.egressIp) logLine("IP keluar server: " + b.egressIp);
+        showVerify(b);
+      }, function () { logLine("uji izin gagal: tidak bisa menghubungi server", "err"); });
+  }
+  $("#uploadCheckBtn").addEventListener("click", function () { ujiIzinUpload(); });
+
+  /* ---- unduh laporan job: bukti lengkap tanpa kredensial ---- */
+  function unduhLaporan() {
+    if (!state.jobId) { logLine("belum ada job — laporan dibuat setelah job jalan", "warn"); return; }
+    var url = "/api/jobs/" + state.jobId + "/report";
+    fetch(url, { credentials: "same-origin" })
+      .then(function (r) { return r.text().then(function (txt) { return { ok: r.ok, txt: txt }; }); })
+      .then(function (res) {
+        if (!res.ok) { logLine("laporan belum tersedia: " + String(res.txt).slice(0, 140), "warn"); return; }
+        var blob = new Blob([res.txt], { type: "text/plain;charset=utf-8" });
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "laporan-ism-" + state.jobId + ".txt";
+        a.click();
+        URL.revokeObjectURL(a.href);
+        logLine("laporan diunduh — status per item, HTTP, pesan asli Roblox, dan hint (tanpa kredensial)", "ok");
+      })
+      .catch(function () { logLine("laporan gagal diunduh", "err"); });
+  }
+  $("#reportBtn").addEventListener("click", function () { unduhLaporan(); });
 
   /* ---- periksa ulang: tanya operasi + inventaris untuk item yang belum pasti ---- */
   function recheck() {
